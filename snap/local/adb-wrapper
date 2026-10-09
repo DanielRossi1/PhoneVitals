@@ -1,0 +1,10 @@
+#!/bin/sh
+# Ubuntu's adb finds its Android support libraries through an absolute
+# RUNPATH (/usr/lib/<triplet>/android), which inside the snap lives under
+# $SNAP instead.
+case "$(uname -m)" in
+  aarch64) triplet=aarch64-linux-gnu ;;
+  *)       triplet=x86_64-linux-gnu ;;
+esac
+export LD_LIBRARY_PATH="$SNAP/usr/lib/$triplet/android:$SNAP/usr/lib/$triplet${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$SNAP/usr/lib/android-sdk/platform-tools/adb" "$@"

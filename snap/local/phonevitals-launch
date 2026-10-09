@@ -1,0 +1,5 @@
+#!/bin/sh
+# Entry point of the snap. Confinement replaces the Chromium setuid sandbox,
+# which a snap cannot ship, hence --no-sandbox.
+exec "$SNAP/opt/phonevitals/electron/electron" "$SNAP/opt/phonevitals/ui" \
+  --no-sandbox "$@"

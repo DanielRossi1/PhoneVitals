@@ -1,0 +1,132 @@
+name: phonevitals
+base: core24
+# The version comes from the VERSION file; see the launcher part.
+adopt-info: launcher
+title: PhoneVitals
+icon: snap/gui/phonevitals.png
+summary: Forensic analysis and diagnostics of Android devices over USB
+description: |
+  Plug in an Android phone with USB debugging enabled and PhoneVitals collects
+  its specifications, checks that the device is consistent with itself, and
+  measures the condition of its components.
+
+  - Authenticity: IMEI check digits, agreement between the identities the
+    Android partitions declare, Verified Boot and bootloader state, Samsung
+    Knox fuse, and hardware key attestation from the secure environment.
+  - Health: battery cycles and remaining capacity, internal storage wear,
+    real CPU, RAM, storage and display figures read from the kernel.
+  - Functional tests and live sensor charts: accelerometer, gyroscope,
+    magnetometer, light, proximity, barometer, GNSS satellites, touch.
+
+  No root is required and nothing is installed on the phone: a small helper
+  runs from a temporary folder and is removed at the end of the session.
+
+  PhoneVitals is an aid to understanding a phone's condition, for example
+  before buying or selling it. Its results are indicative and provided as is,
+  without warranty of any kind; they are not a certification, and the authors
+  accept no liability for decisions based on them or for any damage arising
+  from its use.
+
+  USB access needs the adb-support interface, which is not connected
+  automatically:
+
+      sudo snap connect phonevitals:adb-support
+
+  The automatic loudspeaker test listens through the computer's microphone,
+  which needs:
+
+      sudo snap connect phonevitals:audio-record
+license: Apache-2.0
+website: https://github.com/DanielRossi1/PhoneVitals
+source-code: https://github.com/DanielRossi1/PhoneVitals
+issues: https://github.com/DanielRossi1/PhoneVitals/issues
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+  arm64:
+
+apps:
+  phonevitals:
+    command: bin/phonevitals-launch
+    extensions: [gnome]
+    plugs:
+      - adb-support
+      - audio-record
+      - browser-support
+      - home
+      - network
+      - network-bind
+    environment:
+      PHONEVITALS_PYTHON: $SNAP/bin/python3
+      PHONEVITALS_BACKEND: $SNAP/opt/phonevitals/backend/main.py
+      PHONEVITALS_ADB: $SNAP/bin/adb
+      PYTHONDONTWRITEBYTECODE: '1'
+
+parts:
+  backend-deps:
+    plugin: python
+    source: backend
+    python-requirements:
+      - requirements.txt
+    stage-packages:
+      - python3-venv
+
+  backend:
+    plugin: dump
+    source: backend
+    organize:
+      '*': opt/phonevitals/backend/
+    prime:
+      - -opt/phonevitals/backend/tests
+      - -opt/phonevitals/backend/reports
+      - -opt/phonevitals/backend/requirements.txt
+      - -opt/phonevitals/backend/**/__pycache__
+
+  adb:
+    plugin: nil
+    stage-packages:
+      - adb
+
+  ui:
+    plugin: nil
+    source: ui
+    build-snaps:
+      - node/22/stable
+    override-build: |
+      # Builders behind a proxy (Launchpad, which snapcraft.io uses for
+      # builds from GitHub) need it passed on to Electron's downloader.
+      if [ -n "${https_proxy:-}" ]; then
+        export ELECTRON_GET_USE_PROXY=1 GLOBAL_AGENT_HTTPS_PROXY="$https_proxy"
+      fi
+      npm ci --no-audit --no-fund
+      npm run build
+      install -d "$CRAFT_PART_INSTALL/opt/phonevitals/electron" \
+                 "$CRAFT_PART_INSTALL/opt/phonevitals/ui"
+      cp -a node_modules/electron/dist/. "$CRAFT_PART_INSTALL/opt/phonevitals/electron/"
+      rm -f "$CRAFT_PART_INSTALL/opt/phonevitals/electron/chrome-sandbox"
+      cp -a main.js preload.js package.json dist "$CRAFT_PART_INSTALL/opt/phonevitals/ui/"
+    stage-packages:
+      - libnspr4
+      - libnss3
+
+  launcher:
+    plugin: dump
+    source: snap/local
+    build-packages:
+      - git
+    override-pull: |
+      craftctl default
+      # A release build sits on the tag v<VERSION>; any other build (edge,
+      # pull requests) is marked with its commit so it never passes for one.
+      version="$(cat "$CRAFT_PROJECT_DIR/VERSION")"
+      if ! git -C "$CRAFT_PROJECT_DIR" describe --exact-match --tags "HEAD" 2>/dev/null \
+          | grep -qx "v$version"; then
+        commit="$(git -C "$CRAFT_PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo local)"
+        version="$version+git.$commit"
+      fi
+      craftctl set version="$version"
+    organize:
+      phonevitals-launch: bin/phonevitals-launch
+      adb-wrapper: bin/adb

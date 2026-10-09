@@ -1,0 +1,44 @@
+name: Release
+
+# Publishing a GitHub release builds the snap from its tag, uploads it to the
+# Snap Store and attaches it to the release. A pre-release goes to the
+# candidate channel, a full release to stable.
+#
+# Needs the SNAPCRAFT_STORE_CREDENTIALS secret, created once with:
+#   snapcraft export-login --snaps=phonevitals \
+#     --acls package_access,package_push,package_update,package_release -
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write                 # attach the .snap to the release
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag matches VERSION
+        run: |
+          [ "${{ github.event.release.tag_name }}" = "v$(cat VERSION)" ] || {
+            echo "release tag ${{ github.event.release.tag_name }} but VERSION $(cat VERSION)"
+            exit 1
+          }
+      - name: Refresh attestation roots and revocation list
+        run: ./scripts/update_attestation_data.sh
+      - uses: snapcore/action-build@v1
+        id: build
+      - uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: ${{ github.event.release.prerelease && 'candidate' || 'stable' }}
+      - name: Attach the snap to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.build.outputs.snap }}"

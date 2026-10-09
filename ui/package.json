@@ -1,0 +1,98 @@
+{
+  "name": "phonevitals",
+  "productName": "PhoneVitals",
+  "version": "0.1.0",
+  "description": "Understand the real condition of an Android phone before buying or selling it",
+  "main": "main.js",
+  "private": true,
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "vite build --logLevel warn",
+    "dev:web": "vite",
+    "start": "npm run build && electron .",
+    "dev": "electron . --dev",
+    "check": "node --check main.js && node --check preload.js && vite build --logLevel warn",
+    "dist": "npm run build && electron-builder --publish never"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "electron": "44.4.5",
+    "electron-builder": "26.16.1",
+    "svelte": "5.57.1",
+    "vite": "8.3.1"
+  },
+  "type": "commonjs",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/DanielRossi1/PhoneVitals",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DanielRossi1/PhoneVitals.git"
+  },
+  "build": {
+    "appId": "io.github.phonevitals",
+    "productName": "PhoneVitals",
+    "copyright": "PhoneVitals contributors",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      "assets/**"
+    ],
+    "extraResources": [
+      {
+        "from": "dist",
+        "to": "web"
+      },
+      {
+        "from": "build-backend/phonevitals-backend",
+        "to": "backend"
+      }
+    ],
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.utilities",
+      "icon": "build/icon.png"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "linux": {
+      "target": [
+        "deb"
+      ],
+      "category": "Utility",
+      "icon": "build/icon.png",
+      "synopsis": "Understand the real condition of an Android phone",
+      "maintainer": "PhoneVitals contributors",
+      "vendor": "PhoneVitals contributors",
+      "syncDesktopName": true
+    },
+    "deb": {
+      "depends": [
+        "adb"
+      ],
+      "packageCategory": "utils"
+    }
+  },
+  "allowScripts": {
+    "electron-winstaller": false
+  },
+  "desktopName": "phonevitals.desktop"
+}

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=PhoneVitals
+GenericName=Android Device Diagnostics
+Comment=Forensic analysis and diagnostics of Android devices over USB
+Exec=phonevitals %U
+Icon=${SNAP}/meta/gui/phonevitals.png
+Terminal=false
+Categories=Development;Utility;
+Keywords=android;adb;phone;diagnostics;imei;forensics;
+StartupWMClass=PhoneVitals

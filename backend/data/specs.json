@@ -1,0 +1,647 @@
+{
+  "_note": [
+    "Catalogue of expected specifications, used only for indicative comparisons.",
+    "Discrepancies raise 'warning' findings, never 'critical': a wrong entry",
+    "here would produce a false counterfeit alarm.",
+    "Fields are deliberately omitted where they vary by market or by batch",
+    "(for example the core count of the Galaxy S24, which ships an Exynos 2400",
+    "with 10 cores in Europe and an 8-core Snapdragon 8 Gen 3 elsewhere).",
+    "The camera_count field is left unpopulated on purpose: the number of",
+    "cameras the API exposes varies with logical and hidden cameras, and is",
+    "not reliably comparable with the physical lenses.",
+    "To extend the catalogue, just add entries to this list."
+  ],
+  "_schema": {
+    "name": "commercial name shown in the report",
+    "brand": "expected brand",
+    "devices": "board codenames (ro.product.device)",
+    "models": "commercial models (ro.product.model). Matched exactly; an entry without spaces, such as a part number (SM-S911), also matches as a prefix (SM-S911B, SM-S911B/DS)",
+    "soc": "expected chip",
+    "cpu_cores": "number of physical cores",
+    "ram_gb": "RAM sizes produced",
+    "storage_gb": "storage sizes produced",
+    "resolution": "native panel resolution",
+    "max_refresh_hz": "maximum refresh rate",
+    "confidence": "high | medium | low",
+    "soc_ids": "technical chip designations as the system declares them (ro.soc.model, ro.board.platform, kernel Hardware line). The comparison uses only these: the commercial name never appears in the properties.",
+    "security_updates_until": "year and month until which the manufacturer guarantees security updates at the least (its published update policy); omit when not known for certain"
+  },
+  "devices": [
+    {
+      "name": "Google Pixel 6",
+      "brand": "google",
+      "devices": [
+        "oriole"
+      ],
+      "models": [
+        "Pixel 6",
+        "GR1YH",
+        "G9S9B"
+      ],
+      "soc": "Google Tensor",
+      "cpu_cores": 8,
+      "ram_gb": [
+        8
+      ],
+      "storage_gb": [
+        128,
+        256
+      ],
+      "resolution": {
+        "width": 1080,
+        "height": 2400
+      },
+      "max_refresh_hz": 90,
+      "confidence": "high",
+      "soc_ids": [
+        "gs101"
+      ],
+      "security_updates_until": "2026-10"
+    },
+    {
+      "name": "Google Pixel 6 Pro",
+      "brand": "google",
+      "devices": [
+        "raven"
+      ],
+      "models": [
+        "Pixel 6 Pro",
+        "GLU0G",
+        "G8VOU"
+      ],
+      "soc": "Google Tensor",
+      "cpu_cores": 8,
+      "ram_gb": [
+        12
+      ],
+      "storage_gb": [
+        128,
+        256,
+        512
+      ],
+      "resolution": {
+        "width": 1440,
+        "height": 3120
+      },
+      "max_refresh_hz": 120,
+      "confidence": "high",
+      "soc_ids": [
+        "gs101"
+      ],
+      "security_updates_until": "2026-10"
+    },
+    {
+      "name": "Google Pixel 6a",
+      "brand": "google",
+      "devices": [
+        "bluejay"
+      ],
+      "models": [
+        "Pixel 6a"
+      ],
+      "soc": "Google Tensor",
+      "cpu_cores": 8,
+      "ram_gb": [
+        6
+      ],
+      "storage_gb": [
+        128
+      ],
+      "resolution": {
+        "width": 1080,
+        "height": 2400
+      },
+      "max_refresh_hz": 60,
+      "confidence": "high",
+      "soc_ids": [
+        "gs101"
+      ],
+      "security_updates_until": "2027-07"
+    },
+    {
+      "name": "Google Pixel 7",
+      "brand": "google",
+      "devices": [
+        "panther"
+      ],
+      "models": [
+        "Pixel 7"
+      ],
+      "soc": "Google Tensor G2",
+      "cpu_cores": 8,
+      "ram_gb": [
+        8
+      ],
+      "storage_gb": [
+        128,
+        256
+      ],
+      "resolution": {
+        "width": 1080,
+        "height": 2400
+      },
+      "max_refresh_hz": 90,
+      "confidence": "high",
+      "soc_ids": [
+        "gs201"
+      ],
+      "security_updates_until": "2027-10"
+    },
+    {
+      "name": "Google Pixel 7 Pro",
+      "brand": "google",
+      "devices": [
+        "cheetah"
+      ],
+      "models": [
+        "Pixel 7 Pro"
+      ],
+      "soc": "Google Tensor G2",
+      "cpu_cores": 8,
+      "ram_gb": [
+        12
+      ],
+      "storage_gb": [
+        128,
+        256,
+        512
+      ],
+      "resolution": {
+        "width": 1440,
+        "height": 3120
+      },
+      "max_refresh_hz": 120,
+      "confidence": "high",
+      "soc_ids": [
+        "gs201"
+      ],
+      "security_updates_until": "2027-10"
+    },
+    {
+      "name": "Google Pixel 7a",
+      "brand": "google",
+      "devices": [
+        "lynx"
+      ],
+      "models": [
+        "Pixel 7a"
+      ],
+      "soc": "Google Tensor G2",
+      "cpu_cores": 8,
+      "ram_gb": [
+        8
+      ],
+      "storage_gb": [
+        128
+      ],
+      "resolution": {
+        "width": 1080,
+        "height": 2400
+      },
+      "max_refresh_hz": 90,
+      "confidence": "high",
+      "soc_ids": [
+        "gs201"
+      ],
+      "security_updates_until": "2028-05"
+    },
+    {
+      "name": "Google Pixel 8",
+      "brand": "google",
+      "devices": [
+        "shiba"
+      ],
+      "models": [
+        "Pixel 8"
+      ],
+      "soc": "Google Tensor G3",
+      "cpu_cores": 9,
+      "ram_gb": [
+        8
+      ],
+      "storage_gb": [
+        128,
+        256
+      ],
+      "resolution": {
+        "width": 1080,
+        "height": 2400
+      },
+      "max_refresh_hz": 120,
+      "confidence": "high",
+      "soc_ids": [
+        "zuma"
+      ],
+      "security_updates_until": "2030-10"
+    },
+    {
+      "name": "Google Pixel 8 Pro",
+      "brand": "google",
+      "devices": [
+        "husky"
+      ],
+      "models": [
+        "Pixel 8 Pro"
+      ],
+      "soc": "Google Tensor G3",
+      "cpu_cores": 9,
+      "ram_gb": [
+        12
+      ],
+      "storage_gb": [
+        128,
+        256,
+        512,
+        1024
+      ],
+      "resolution": {
+        "width": 1344,
+        "height": 2992
+      },
+      "max_refresh_hz": 120,
+      "confidence": "high",
+      "soc_ids": [
+        "zuma"
+      ],
+      "security_updates_until": "2030-10"
+    },
+    {
+      "name": "Google Pixel 8a",
+      "brand": "google",
+      "devices": [
+        "akita"
+      ],
+      "models": [
+        "Pixel 8a"
+      ],
+      "soc": "Google Tensor G3",
+      "cpu_cores": 9,
+      "ram_gb": [
+        8
+      ],
+      "storage_gb": [
+        128,
+        256
+      ],
+      "resolution": {
+        "width": 1080,
+        "height": 2400
+      },
+      "max_refresh_hz": 120,
+      "confidence": "medium",
+      "soc_ids": [
+        "zuma"
+      ],
+      "security_updates_until": "2031-05"
+    },
+    {
+      "name": "Google Pixel 9",
+      "brand": "google",
+      "devices": [
+        "tokay"
+      ],
+      "models": [
+        "Pixel 9"
+      ],
+      "soc": "Google Tensor G4",
+      "cpu_cores": 8,
+      "ram_gb": [
+        12
+      ],
+      "storage_gb": [
+        128,
+        256
+      ],
+      "resolution": {
+        "width": 1080,
+        "height": 2424
+      },
+      "max_refresh_hz": 120,
+      "confidence": "medium",
+      "soc_ids": [
+        "zumapro"
+      ],
+      "security_updates_until": "2031-08"
+    },
+    {
+      "name": "Google Pixel 9 Pro",
+      "brand": "google",
+      "devices": [
+        "caiman"
+      ],
+      "models": [
+        "Pixel 9 Pro"
+      ],
+      "soc": "Google Tensor G4",
+      "cpu_cores": 8,
+      "ram_gb": [
+        16
+      ],
+      "storage_gb": [
+        128,
+        256,
+        512,
+        1024
+      ],
+      "resolution": {
+        "width": 1280,
+        "height": 2856
+      },
+      "max_refresh_hz": 120,
+      "confidence": "medium",
+      "soc_ids": [
+        "zumapro"
+      ],
+      "security_updates_until": "2031-08"
+    },
+    {
+      "name": "Google Pixel 9 Pro XL",
+      "brand": "google",
+      "devices": [
+        "komodo"
+      ],
+      "models": [
+        "Pixel 9 Pro XL"
+      ],
+      "soc": "Google Tensor G4",
+      "cpu_cores": 8,
+      "ram_gb": [
+        16
+      ],
+      "storage_gb": [
+        128,
+        256,
+        512,
+        1024
+      ],
+      "resolution": {
+        "width": 1344,
+        "height": 2992
+      },
+      "max_refresh_hz": 120,
+      "confidence": "medium",
+      "soc_ids": [
+        "zumapro"
+      ],
+      "security_updates_until": "2031-08"
+    },
+    {
+      "name": "Samsung Galaxy A71",
+      "brand": "samsung",
+      "devices": [
+        "a71"
+      ],
+      "models": [
+        "SM-A715"
+      ],
+      "soc": "Snapdragon 730",
+      "cpu_cores": 8,
+      "ram_gb": [
+        6,
+        8
+      ],
+      "storage_gb": [
+        128
+      ],
+      "resolution": {
+        "width": 1080,
+        "height": 2400
+      },
+      "max_refresh_hz": 60,
+      "confidence": "high",
+      "soc_ids": [
+        "sm7150",
+        "sm6150",
+        "sdmmagpie"
+      ]
+    },
+    {
+      "name": "Samsung Galaxy S22",
+      "brand": "samsung",
+      "devices": [
+        "r0q",
+        "r0s"
+      ],
+      "models": [
+        "SM-S901"
+      ],
+      "ram_gb": [
+        8
+      ],
+      "storage_gb": [
+        128,
+        256
+      ],
+      "resolution": {
+        "width": 1080,
+        "height": 2340
+      },
+      "max_refresh_hz": 120,
+      "confidence": "medium",
+      "security_updates_until": "2027-02"
+    },
+    {
+      "name": "Samsung Galaxy S22 Ultra",
+      "brand": "samsung",
+      "devices": [
+        "b0q",
+        "b0s"
+      ],
+      "models": [
+        "SM-S908"
+      ],
+      "ram_gb": [
+        8,
+        12
+      ],
+      "storage_gb": [
+        128,
+        256,
+        512,
+        1024
+      ],
+      "resolution": {
+        "width": 1440,
+        "height": 3088
+      },
+      "max_refresh_hz": 120,
+      "confidence": "medium",
+      "security_updates_until": "2027-02"
+    },
+    {
+      "name": "Samsung Galaxy S23",
+      "brand": "samsung",
+      "devices": [
+        "dm1q"
+      ],
+      "models": [
+        "SM-S911"
+      ],
+      "soc": "Snapdragon 8 Gen 2",
+      "cpu_cores": 8,
+      "ram_gb": [
+        8
+      ],
+      "storage_gb": [
+        128,
+        256,
+        512
+      ],
+      "resolution": {
+        "width": 1080,
+        "height": 2340
+      },
+      "max_refresh_hz": 120,
+      "confidence": "high",
+      "soc_ids": [
+        "sm8550",
+        "kalama"
+      ],
+      "security_updates_until": "2028-02"
+    },
+    {
+      "name": "Samsung Galaxy S23+",
+      "brand": "samsung",
+      "devices": [
+        "dm2q"
+      ],
+      "models": [
+        "SM-S916"
+      ],
+      "soc": "Snapdragon 8 Gen 2",
+      "cpu_cores": 8,
+      "ram_gb": [
+        8
+      ],
+      "storage_gb": [
+        256,
+        512
+      ],
+      "resolution": {
+        "width": 1080,
+        "height": 2340
+      },
+      "max_refresh_hz": 120,
+      "confidence": "high",
+      "soc_ids": [
+        "sm8550",
+        "kalama"
+      ],
+      "security_updates_until": "2028-02"
+    },
+    {
+      "name": "Samsung Galaxy S23 Ultra",
+      "brand": "samsung",
+      "devices": [
+        "dm3q"
+      ],
+      "models": [
+        "SM-S918"
+      ],
+      "soc": "Snapdragon 8 Gen 2",
+      "cpu_cores": 8,
+      "ram_gb": [
+        8,
+        12
+      ],
+      "storage_gb": [
+        256,
+        512,
+        1024
+      ],
+      "resolution": {
+        "width": 1440,
+        "height": 3088
+      },
+      "max_refresh_hz": 120,
+      "confidence": "high",
+      "soc_ids": [
+        "sm8550",
+        "kalama"
+      ],
+      "security_updates_until": "2028-02"
+    },
+    {
+      "name": "Samsung Galaxy S24",
+      "brand": "samsung",
+      "devices": [
+        "e1q",
+        "e1s"
+      ],
+      "models": [
+        "SM-S921"
+      ],
+      "ram_gb": [
+        8
+      ],
+      "storage_gb": [
+        128,
+        256,
+        512
+      ],
+      "resolution": {
+        "width": 1080,
+        "height": 2340
+      },
+      "max_refresh_hz": 120,
+      "confidence": "medium",
+      "security_updates_until": "2031-01"
+    },
+    {
+      "name": "Samsung Galaxy S24+",
+      "brand": "samsung",
+      "devices": [
+        "e2q",
+        "e2s"
+      ],
+      "models": [
+        "SM-S926"
+      ],
+      "ram_gb": [
+        12
+      ],
+      "storage_gb": [
+        256,
+        512
+      ],
+      "resolution": {
+        "width": 1440,
+        "height": 3120
+      },
+      "max_refresh_hz": 120,
+      "confidence": "medium",
+      "security_updates_until": "2031-01"
+    },
+    {
+      "name": "Samsung Galaxy S24 Ultra",
+      "brand": "samsung",
+      "devices": [
+        "e3q"
+      ],
+      "models": [
+        "SM-S928"
+      ],
+      "soc": "Snapdragon 8 Gen 3",
+      "cpu_cores": 8,
+      "ram_gb": [
+        12
+      ],
+      "storage_gb": [
+        256,
+        512,
+        1024
+      ],
+      "resolution": {
+        "width": 1440,
+        "height": 3120
+      },
+      "max_refresh_hz": 120,
+      "confidence": "medium",
+      "soc_ids": [
+        "sm8650",
+        "pineapple"
+      ],
+      "security_updates_until": "2031-01"
+    }
+  ]
+}

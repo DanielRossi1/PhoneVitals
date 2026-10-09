@@ -1,0 +1,108 @@
+name: Desktop builds
+
+# Installers for macOS (Apple Silicon and Intel), Windows and Debian/Ubuntu
+# (x64 and arm64). Every push to main keeps them as workflow artifacts; a
+# published release gets them attached. The snap is built and published by
+# release.yml and by snapcraft.io.
+#
+# The backend is frozen with PyInstaller on each runner (it cannot
+# cross-compile), then electron-builder packages it with the interface.
+# Builds are unsigned: macOS Gatekeeper and Windows SmartScreen warn on first
+# launch. Signing needs certificates in repository secrets (CSC_LINK and
+# CSC_KEY_PASSWORD; APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID
+# for notarisation), which electron-builder picks up by itself.
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write                 # attach the installers to a release
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux x64 (deb),    runner: ubuntu-22.04,     target: --linux deb,  arch: --x64 }
+          - { name: Linux arm64 (deb),  runner: ubuntu-22.04-arm, target: --linux deb,  arch: --arm64 }
+          - { name: macOS Apple Silicon, runner: macos-14,        target: --mac dmg,    arch: --arm64 }
+          - { name: macOS Intel,        runner: macos-13,         target: --mac dmg,    arch: --x64 }
+          - { name: Windows x64,        runner: windows-latest,   target: --win nsis,   arch: --x64 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Refresh attestation roots and revocation list
+        if: github.event_name == 'release'
+        run: ./scripts/update_attestation_data.sh
+
+      - name: Freeze the backend
+        run: |
+          python -m pip install -r backend/requirements.txt pyinstaller==6.22.3
+          python scripts/build_backend.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install the interface toolchain
+        working-directory: ui
+        run: npm ci --no-audit --no-fund
+
+      # electron-builder's bundled fpm is x64 only.
+      - name: fpm for arm64 Debian packages
+        if: matrix.arch == '--arm64' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential
+          sudo gem install --no-document fpm
+          echo "USE_SYSTEM_FPM=true" >> "$GITHUB_ENV"
+
+      - name: Package
+        working-directory: ui
+        env:
+          # Unsigned unless signing secrets are configured.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          npm run build
+          npx electron-builder ${{ matrix.target }} ${{ matrix.arch }} --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhoneVitals-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            ui/release/*.deb
+            ui/release/*.dmg
+            ui/release/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          gh release upload "${{ github.event.release.tag_name }}" \
+            ui/release/*.deb ui/release/*.dmg ui/release/*.exe --clobber

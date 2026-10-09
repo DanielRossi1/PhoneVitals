@@ -1,0 +1,61 @@
+# Local editor and tool settings
+.claude/
+CLAUDE.local.md
+
+# Kept out of the repository on purpose
+/README.md
+
+# Local toolchain and dependencies
+/.toolchain/
+/.toolchain-setup.log
+node_modules/
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build output
+/agent/build/
+/ui/dist/
+/ui/release/
+/ui/build-backend/
+/dist/
+*.dex.tmp
+
+# Snapcraft
+*.snap
+/parts/
+/stage/
+/prime/
+/.craft/
+snap/.snapcraft/
+
+# Device data: reports and the local device memory hold IMEIs, serial
+# numbers and personal details of the phones analysed
+/backend/reports/
+*.db
+salt
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*~
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+
+# Local configuration and secrets
+.env
+.env.*

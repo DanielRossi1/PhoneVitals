@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  version:
+    name: Version consistency
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: VERSION, package.json and CHANGELOG agree
+        run: |
+          v="$(cat VERSION)"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "VERSION is not x.y.z: $v"; exit 1; }
+          p="$(python3 -c 'import json; print(json.load(open("ui/package.json"))["version"])')"
+          [ "$v" = "$p" ] || { echo "VERSION $v but ui/package.json $p: run scripts/bump_version.sh"; exit 1; }
+          grep -q "^## \[$v\]" CHANGELOG.md || { echo "CHANGELOG.md has no entry for $v"; exit 1; }
+
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt
+      - name: Engine, attestation and collector tests
+        working-directory: backend
+        run: |
+          python tests/test_engine.py
+          python tests/test_attestation.py
+          python tests/test_collectors.py
+          python tests/test_store.py
+
+  ui:
+    name: Interface build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        env:
+          # The Electron binary is not needed to build the interface.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      - run: npm run check
+
+  snap:
+    name: Snap
+    runs-on: ubuntu-24.04
+    needs: [backend, ui]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # tags, for the snap version
+      - uses: snapcore/action-build@v1
+        id: build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phonevitals-snap
+          path: ${{ steps.build.outputs.snap }}
+          retention-days: 14
