@@ -101,12 +101,15 @@ parts:
         export ELECTRON_GET_USE_PROXY=1 GLOBAL_AGENT_HTTPS_PROXY="$https_proxy"
       fi
       npm ci --no-audit --no-fund
+      # Since Electron 44 the package no longer fetches its binary on
+      # install; it is downloaded explicitly into node_modules/electron/dist.
+      npx --no-install install-electron
       npm run build
       install -d "$CRAFT_PART_INSTALL/opt/phonevitals/electron" \
                  "$CRAFT_PART_INSTALL/opt/phonevitals/ui"
       cp -a node_modules/electron/dist/. "$CRAFT_PART_INSTALL/opt/phonevitals/electron/"
       rm -f "$CRAFT_PART_INSTALL/opt/phonevitals/electron/chrome-sandbox"
-      cp -a main.js preload.js package.json dist "$CRAFT_PART_INSTALL/opt/phonevitals/ui/"
+      cp -a main.js preload.js package.json assets dist "$CRAFT_PART_INSTALL/opt/phonevitals/ui/"
     stage-packages:
       - libnspr4
       - libnss3
