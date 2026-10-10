@@ -15,7 +15,7 @@ jobs:
     name: Version consistency
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: VERSION, package.json and CHANGELOG agree
         run: |
           v="$(cat VERSION)"
@@ -28,8 +28,8 @@ jobs:
     name: Backend tests
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -50,8 +50,8 @@ jobs:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -67,12 +67,12 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [backend, ui]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0          # tags, for the snap version
       - uses: snapcore/action-build@v1
         id: build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: phonevitals-snap
           path: ${{ steps.build.outputs.snap }}

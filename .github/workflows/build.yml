@@ -36,16 +36,16 @@ jobs:
         include:
           - { name: Linux x64 (deb),    runner: ubuntu-22.04,     target: --linux deb,  arch: --x64 }
           - { name: Linux arm64 (deb),  runner: ubuntu-22.04-arm, target: --linux deb,  arch: --arm64 }
-          - { name: macOS Apple Silicon, runner: macos-14,        target: --mac dmg,    arch: --arm64 }
-          - { name: macOS Intel,        runner: macos-13,         target: --mac dmg,    arch: --x64 }
+          - { name: macOS Apple Silicon, runner: macos-15,        target: --mac dmg,    arch: --arm64 }
+          - { name: macOS Intel,        runner: macos-15-intel,   target: --mac dmg,    arch: --x64 }
           - { name: Windows x64,        runner: windows-latest,   target: --win nsis,   arch: --x64 }
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -60,7 +60,7 @@ jobs:
           python -m pip install -r backend/requirements.txt pyinstaller==6.22.3
           python scripts/build_backend.py
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -88,7 +88,7 @@ jobs:
           npm run build
           npx electron-builder ${{ matrix.target }} ${{ matrix.arch }} --publish never
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: PhoneVitals-${{ runner.os }}-${{ runner.arch }}
           path: |
