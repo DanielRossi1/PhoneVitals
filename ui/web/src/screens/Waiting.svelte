@@ -2,6 +2,7 @@
   import Icon from '../components/Icon.svelte';
   import StateLayout from './StateLayout.svelte';
   import { app, SESSION_EXPIRED } from '../lib/app.svelte.js';
+  import { TERMS_NOTICE } from '../lib/terms.js';
 
   const STEPS = [
     { title: 'Turn on developer options', text: 'Settings › About phone › tap Build number seven times.' },
@@ -60,11 +61,8 @@
   </ol>
   <p class="hint foot">No root needed, nothing is installed on the phone. Keep the bootloader locked:
     unlocking it destroys the integrity evidence this tool checks.</p>
-  <p class="hint foot terms">PhoneVitals helps you understand the condition of a phone, for example
-    before buying or selling it. Its results are indicative and provided as is, without warranty:
-    they are not a certification, and the authors accept no liability for decisions based on them
-    or for any damage arising from its use. Some tests heat the phone, vibrate it or change a
-    setting for a few seconds; use them at your own risk.</p>
+  <p class="hint foot terms">{TERMS_NOTICE}
+    <button type="button" class="link" onclick={() => (app.terms = true)}>Read the terms</button></p>
 </StateLayout>
 
 <style>
@@ -134,4 +132,6 @@
   .steps p { font-size: 12.5px; color: var(--text-3); }
   .foot { margin-top: 20px; max-width: 620px; text-align: center; }
   .terms { margin-top: 8px; font-size: 11.5px; }
+  .link { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
+  .link:hover { text-decoration: underline; }
 </style>

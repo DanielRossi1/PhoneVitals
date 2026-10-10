@@ -3,13 +3,15 @@
   import { app, chooseBenchFolder, runAutomaticTests, setBench, startTest } from '../lib/app.svelte.js';
   import { STATUS, TEST_ICONS } from '../lib/tests.js';
 
-  const available = $derived(app.tests.filter((t) => t.available));
+  // The physical inspection is a checklist on the Hardware check page.
+  const tests = $derived(app.tests.filter((t) => t.id !== 'inspection'));
+  const available = $derived(tests.filter((t) => t.available));
   const done = $derived(available.filter((t) => ['passed', 'failed'].includes(app.results[t.id]?.status)));
   const failed = $derived(done.filter((t) => app.results[t.id]?.status === 'failed').length);
   const groups = $derived([
     { kind: 'automatic', title: 'Automatic', text: 'Measured by the computer: no judgement needed.' },
     { kind: 'guided', title: 'Guided', text: 'Need your eyes or hands: you confirm the outcome.' },
-  ].map((g) => ({ ...g, tests: app.tests.filter((t) => t.kind === g.kind) })));
+  ].map((g) => ({ ...g, tests: tests.filter((t) => t.kind === g.kind) })));
   const autoRunning = $derived(app.autoQueue.length > 0);
 </script>
 

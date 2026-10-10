@@ -1,6 +1,6 @@
 <script>
   import Icon from './Icon.svelte';
-  import { SEVERITY } from '../lib/report.js';
+  import { evidenceRows, SEVERITY, STRENGTHS } from '../lib/report.js';
 
   let { finding } = $props();
   let open = $state(false);
@@ -17,7 +17,8 @@
     <header>
       <h4>{finding.title}</h4>
       {#if finding.strength_label}
-        <span class="strength strength-{finding.strength}">{finding.strength_label}</span>
+        {@const st = STRENGTHS[finding.strength]}
+        <span class="strength strength-{finding.strength}" title={st?.hint ?? ''}>{st?.label ?? finding.strength_label}</span>
       {/if}
       {#if finding.modification}
         <span class="strength" title="Follows from software the owner installed, not from tampering">Modification</span>
@@ -27,10 +28,14 @@
     {#if hasEvidence}
       <button type="button" class="toggle" aria-expanded={open} onclick={() => (open = !open)}>
         <Icon name={open ? 'down' : 'right'} size={14} />
-        {open ? 'Hide evidence' : 'Show evidence'}
+        {open ? 'Hide details' : 'Show details'}
       </button>
       {#if open}
-        <pre class="evidence">{JSON.stringify(finding.evidence, null, 2)}</pre>
+        <dl class="evidence details">
+          {#each evidenceRows(finding.evidence) as [k, v] (k)}
+            <dt>{k}</dt><dd>{v}</dd>
+          {/each}
+        </dl>
       {/if}
     {/if}
   </div>
@@ -78,4 +83,14 @@
     cursor: pointer;
   }
   .toggle:hover { color: var(--text); }
+  .details {
+    display: grid;
+    grid-template-columns: minmax(120px, max-content) 1fr;
+    gap: 4px 14px;
+    font-family: inherit;
+    font-size: 12.5px;
+    white-space: normal;
+  }
+  .details dt { color: var(--text-3); }
+  .details dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
 </style>

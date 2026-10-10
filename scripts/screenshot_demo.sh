@@ -27,7 +27,7 @@ done
 [ -n "$ADDR" ] || { echo "backend did not start:"; cat "$LOG"; exit 1; }
 
 cd "$ROOT/ui"
-for tab in overview authenticity health tests live specs raw; do
+for tab in overview authenticity health hardware tests live specs raw; do
   PHONEVITALS_BACKEND_URL="http://$ADDR/?token=$PHONEVITALS_TOKEN" \
   PHONEVITALS_TAB="$tab" \
   "$ROOT/ui/node_modules/.bin/electron" . --no-sandbox \

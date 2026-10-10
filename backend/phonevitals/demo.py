@@ -166,6 +166,8 @@ def build_demo_snapshot() -> dict[str, Any]:
             "panel": {"panel_name": "google-samsung-shiba"},
             "drm_connectors": {"card0-DSI-1": "connected"},
             "hdr_types": ["Dolby Vision", "HDR10", "HLG", "HDR10+"],
+            "product_info": {"name": "DEMO-PANEL-01", "manufacturerPnpId": "GGL"},
+            "screen_part_status": "ORIGINAL",
         },
         "battery": {
             "framework": {}, "level_percent": 78, "status": "discharging",
@@ -173,7 +175,7 @@ def build_demo_snapshot() -> dict[str, Any]:
             "technology": "Li-ion", "battery_type": "SWD-ATL",
             "temperature_c": 31.4, "voltage_v": 4.012, "current_ma": -412.0,
             "power_w": -1.65,
-            "design_capacity_mah": 5050.0, "full_capacity_mah": 4787.0,
+            "design_capacity_mah": 5050.0, "full_capacity_mah": 4787.0, "part_status": "ORIGINAL",
             "health_percent": 94.8, "health_source": "charge_full / charge_full_design",
             "cycle_count": 137,
             "manufacturing_date": {"iso": battery_made, "raw": battery_made,
@@ -396,8 +398,15 @@ def build_demo_snapshot() -> dict[str, Any]:
                        "days_ago": 88, "confident": True},
         "boot_count": 41,
         "boot_reason": "reboot,ota",
-        "boot_history": [{"reason": r, "epoch": None, "abnormal": False}
-                         for r in ("reboot,ota", "reboot,userrequested", "reboot,ota")],
+        "boot_history": [{"reason": r, "epoch": int((datetime.now(UTC) - timedelta(days=d)).timestamp()),
+                          "abnormal": False, "event": e, "maintenance": False}
+                         for r, d, e in (("reboot,ota", 3, "system update"),
+                                         ("reboot,userrequested", 19, "restart"),
+                                         ("reboot,ota", 34, "system update"))],
+        "traces": {"sims": 1, "esims": 0, "wifi": 3, "accounts_added": 2, "accounts_removed": 0},
+        "users": {"read": True, "count": 1, "secondary": 0, "guest": False,
+                  "work_profile": False, "private_space": False, "clone_profile": False,
+                  "types": ["full.SYSTEM"]},
         "crashes": {"counts": {"SYSTEM_TOMBSTONE": 2}, "labels": {
             "SYSTEM_TOMBSTONE": "native process crashes"},
             "since": (today - timedelta(days=4)).isoformat(), "available": True},
@@ -431,6 +440,9 @@ def build_demo_snapshot() -> dict[str, Any]:
         "sources_available": 7,
     }
 
+    snapshot["provenance"] = {"hardware_model": "DEMO1", "market": "Global",
+                              "market_source": "model number", "board_revision": "MP1.0",
+                              "sim_countries": ["Italy"], "network_countries": ["Italy"]}
     engine = AuthenticityEngine(snapshot, specdb=SpecDatabase())
     report = engine.run()
     for f in snapshot["imei_analysis"]["findings"]:

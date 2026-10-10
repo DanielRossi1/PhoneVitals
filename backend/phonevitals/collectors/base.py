@@ -144,3 +144,22 @@ _NOT_A_TEMPERATURE = re.compile(
 def is_temperature_zone(zone_type: str) -> bool:
     return not _NOT_A_TEMPERATURE.search(zone_type or "")
 
+
+def current_hal_temperatures(dump: str) -> str:
+    """The live part of `dumpsys thermalservice`.
+
+    The service prints its cached temperatures first, updated only when a
+    threshold is crossed, so they can sit for hours at a value long gone;
+    the "Current temperatures from HAL" section is read fresh. Older releases
+    without that section get the whole dump.
+    """
+    m = re.search(r"Current temperatures from HAL:(.*?)(?:\n\S|\Z)", dump, re.S)
+    return m.group(1) if m else dump
+
+
+def is_hal_temperature(name: str, value: float) -> bool:
+    """Thermal HAL entries that hold a temperature: not the USB and limit
+    flags some HALs publish alongside (VIRTUAL-USB-UI at 1.0, 0.0 placeholders)."""
+    return (is_temperature_zone(name) and not name.upper().startswith("VIRTUAL-USB")
+            and value > 1.0)
+

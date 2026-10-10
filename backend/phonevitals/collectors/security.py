@@ -289,6 +289,13 @@ class PackagesCollector(Collector):
                 "com.google.android.gsf' | head -10"
             ),
             "pkg.gms_version": "dumpsys package com.google.android.gms | grep -m2 versionName",
+            # System apps that name the distribution when no property does
+            # (GrapheneOS, CalyxOS, /e/OS, iodéOS).
+            "pkg.os_markers": (
+                "pm list packages --user 0 -s 2>/dev/null | grep -oE "
+                "'app\\.grapheneos\\.info|org\\.calyxos\\.[a-z]+|foundation\\.e\\.[a-z]+|"
+                "com\\.iode\\.[a-z]+' | sort -u | head -5"
+            ),
         }
 
     def parse(self, raw: dict[str, str]) -> dict[str, Any]:
@@ -305,7 +312,13 @@ class PackagesCollector(Collector):
             set(third) & set(ROOT_PACKAGES + SPOOF_PACKAGES)
         )
 
+        markers = raw.get("pkg.os_markers", "")
+        os_name = next((name for prefix, name in (
+            ("app.grapheneos", "GrapheneOS"), ("org.calyxos", "CalyxOS"),
+            ("foundation.e", "/e/OS"), ("com.iode", "iodéOS"))
+            if prefix in markers), None)
         return {
+            "os_distribution": os_name,
             "system_count": self._n(raw.get("pkg.system_count")),
             "third_party_count": self._n(raw.get("pkg.third_count")),
             "disabled_count": self._n(raw.get("pkg.disabled")),

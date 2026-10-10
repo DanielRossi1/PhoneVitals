@@ -8,6 +8,7 @@ the chip vendor names, which are themselves a hint of authenticity.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -296,10 +297,19 @@ class InputCollector(Collector):
             # capabilities. Needed to know which device is the touchscreen
             # before opening a live stream on it.
             "in.getevent": "getevent -pl 2>/dev/null",
+            # The input service shows the hardware IDs each device reports
+            # (vendor 0x27c6 is Goodix), which /proc/bus/input hides from the
+            # shell on recent releases.
+            "in.ids": "dumpsys input 2>/dev/null | grep -E '^    [0-9]+: |^      Identifier:'"
+                      " | head -80",
         }
 
     def parse(self, raw: dict[str, str]) -> dict[str, Any]:
         devices = self._parse_getevent(raw.get("in.getevent", ""))
+        ids = self._hardware_ids(raw.get("in.ids", ""))
+        for d in devices:
+            if ids.get(d["name"]):
+                d["hardware_id"] = ids[d["name"]]
         touchscreen = next((d for d in devices if d["is_touchscreen"]), None)
         return {
             "devices": devices,
@@ -308,6 +318,21 @@ class InputCollector(Collector):
             "stylus": next((d for d in devices if d["is_stylus"]), None),
             "key_devices": [d for d in devices if d["is_keys"]],
         }
+
+    @staticmethod
+    def _hardware_ids(text: str) -> dict[str, str]:
+        """Device name -> `vendor:product v<version>`, zeros left out."""
+        out: dict[str, str] = {}
+        name = None
+        for line in text.splitlines():
+            m = re.match(r"\s+\d+: (.+)$", line)
+            if m:
+                name = m.group(1).strip()
+                continue
+            m = re.search(r"vendor=0x([0-9a-f]+), product=0x([0-9a-f]+), version=0x([0-9a-f]+)", line)
+            if m and name and m.group(1) != "0000":
+                out[name] = f"{m.group(1)}:{m.group(2)} v{m.group(3)}"
+        return out
 
     @staticmethod
     def _parse_getevent(text: str) -> list[dict[str, Any]]:
@@ -412,9 +437,12 @@ class AudioCollector(Collector):
             # The devices attached right now, as the audio policy sees them:
             # the reliable answer to "is there a loudspeaker, an earpiece, how
             # many microphones".
+            # From the first "Available" heading to the hardware modules: the
+            # attached devices, in the Android 7 and the current format alike.
+            # sed rather than awk, which Android 7's shell does not have.
             "aud.policy": "dumpsys media.audio_policy 2>/dev/null"
-                          " | awk '/Available (output|input) devices/{p=1; print; next}"
-                          " /^[^ ]/{p=0} p' | grep -E 'Available|^  [0-9]+\\. Port ID'",
+                          " | sed -nE '/Available output devices/,/(Hardware modules|HW Modules)/p'"
+                          " | grep -E 'Available|AUDIO_DEVICE_(OUT|IN)_'",
             "aud.cards": "cat /proc/asound/cards 2>/dev/null",
             "aud.pcm": "cat /proc/asound/pcm 2>/dev/null",
         }
@@ -476,6 +504,7 @@ class BiometricCollector(Collector):
                 "sensors": self._sensors(fp),
                 "enrolled": self._enrolled(fp),
                 "hal": self._find(fp, r"HAL[^\n]*?:\s*([^\n]+)"),
+                "stats": self._stats(fp),
             },
             "face": {
                 "present": bool(face.strip()) and "Can't find service" not in face,
@@ -489,6 +518,23 @@ class BiometricCollector(Collector):
         # The dump repeats the sensor id in every per-user and per-client
         # block: keep each id once, in order.
         return list(dict.fromkeys(re.findall(r"sensorId[=:\s]+(\d+)", text)))
+
+    @staticmethod
+    def _stats(text: str) -> dict[str, int] | None:
+        """Accepted and rejected touches since the fingerprints were enrolled,
+        from the service's own counters (one JSON line in the dump)."""
+        for line in text.splitlines():
+            if '"prints"' not in line:
+                continue
+            try:
+                prints = json.loads(line).get("prints") or []
+            except ValueError:
+                continue
+            totals = {k: sum(int(p.get(k) or 0) for p in prints)
+                      for k in ("accept", "reject", "lockout", "permanentLockout")}
+            return {"accept": totals["accept"], "reject": totals["reject"],
+                    "lockout": totals["lockout"] + totals["permanentLockout"]}
+        return None
 
     @staticmethod
     def _enrolled(text: str) -> int | None:

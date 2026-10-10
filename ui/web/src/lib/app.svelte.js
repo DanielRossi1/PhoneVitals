@@ -50,6 +50,7 @@ export const app = $state({
   progress_: {},               // test id -> short progress text while it runs
   live: emptyLive(),
   dialog: null,                 // id of the guided test being run
+  terms: false,                 // terms of use dialog open
   keysPressed: [],
   autoQueue: [],                // automatic tests still to run in sequence
   page: 'overview',
@@ -650,7 +651,7 @@ export function toast(text, tone = 'info', ms = 3500) {
   setTimeout(() => { app.toasts = app.toasts.filter((t) => t.id !== id); }, ms);
 }
 
-const PAGE_IDS = ['overview', 'authenticity', 'health', 'tests', 'live', 'specs', 'raw'];
+const PAGE_IDS = ['overview', 'authenticity', 'health', 'hardware', 'tests', 'live', 'specs', 'raw'];
 
 /** Pages are reflected in the URL hash, so a reload stays on the same page. */
 export function navigate(page) {

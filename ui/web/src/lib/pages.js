@@ -6,6 +6,8 @@ export const PAGES = [
     subtitle: 'Is the device what it claims to be?' },
   { id: 'health', label: 'Health', icon: 'health',
     subtitle: 'Condition of the components, measured against the specifications' },
+  { id: 'hardware', label: 'Hardware check', icon: 'chip',
+    subtitle: 'Every component, original or replaced, and whether it works' },
   { id: 'tests', label: 'Tests', icon: 'tests',
     subtitle: 'Functional checks, automatic and guided' },
   { id: 'live', label: 'Live sensors', icon: 'live',

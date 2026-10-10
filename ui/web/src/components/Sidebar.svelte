@@ -9,13 +9,15 @@
 
   const s = $derived(app.snapshot?.summary ?? {});
   const name = $derived(`${cap(s.brand)} ${s.model ?? ''}`.trim() || 'Device');
+  // The physical inspection is counted on the Hardware check page, not here.
   const testsDone = $derived(
-    Object.values(app.results).filter((r) => r.status === 'passed' || r.status === 'failed').length,
+    Object.values(app.results).filter((r) => r.id !== 'inspection'
+      && (r.status === 'passed' || r.status === 'failed')).length,
   );
-  const testsAvailable = $derived(app.tests.filter((t) => t.available).length);
+  const testsAvailable = $derived(app.tests.filter((t) => t.available && t.id !== 'inspection').length);
 
   function badge(id) {
-    if (id === 'authenticity' || id === 'health') {
+    if (id === 'authenticity' || id === 'health' || id === 'hardware') {
       const n = issueCount(app.snapshot, id);
       return n ? { text: String(n), tone: 'warn' } : null;
     }
@@ -65,9 +67,13 @@
     </div>
     <ThemeSwitch />
   </footer>
+  <button type="button" class="terms-link" onclick={() => (app.terms = true)}>Terms of use</button>
 </aside>
 
 <style>
+  .terms-link { align-self: flex-start; margin: 6px 0 0 4px; padding: 0; border: 0; background: none;
+                color: var(--text-3); font: inherit; font-size: 12px; cursor: pointer; }
+  .terms-link:hover { color: var(--text); text-decoration: underline; }
   .sidebar {
     display: flex;
     flex-direction: column;

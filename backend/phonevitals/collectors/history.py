@@ -27,7 +27,7 @@ import re
 from datetime import date
 from typing import Any
 
-from .base import Collector, parse_props, to_int
+from .base import Collector, parse_kv, parse_props, to_int
 
 # Samsung serials (e.g. R5CR8TEST01): the fourth character is the year and
 # the fifth the month (1-9, then A-C). Only the year letters observed on
@@ -68,6 +68,27 @@ USER_DIRS = ("DCIM", "Pictures", "Download", "Documents", "Movies", "Music",
 # SYSTEM_LAST_KMSG is not counted: it is filed after any boot that kept the
 # previous kernel log, which includes every update through recovery, so it
 # says nothing about a crash. Panics show up in the boot reasons instead.
+# What a boot reason says happened, checked in order. The first three mean
+# someone entered the phone's maintenance modes: flashing, wiping or
+# repairing it.
+BOOT_EVENTS = (
+    ("factory_reset", "factory reset"), ("wipe", "factory reset"),
+    ("recovery", "recovery mode"), ("bootloader", "bootloader (fastboot) mode"),
+    ("fastboot", "bootloader (fastboot) mode"), ("thermal", "overheating shutdown"),
+    ("battery", "battery ran flat"), ("undervoltage", "power failure"),
+    ("brownout", "power failure"), ("panic", "kernel panic"), ("watchdog", "watchdog reset"),
+    ("wdog", "watchdog reset"), ("ota", "system update"), ("userrequested", "restart"),
+    ("shutdown", "shutdown"), ("reboot", "restart"),
+)
+MAINTENANCE_EVENTS = {"factory reset", "recovery mode", "bootloader (fastboot) mode"}
+
+# Dropbox entries written after a boot from recovery, or a file system repair.
+EVENT_TAGS = {
+    "SYSTEM_RECOVERY_LOG": "recovery mode used",
+    "SYSTEM_RECOVERY_KMSG": "recovery mode used",
+    "SYSTEM_FSCK": "file system repaired at boot",
+}
+
 CRASH_TAGS = {
     "SYSTEM_RESTART": "framework restarts",
     "system_server_watchdog": "system watchdog resets",
@@ -89,13 +110,13 @@ class HistoryCollector(Collector):
             # seconds they span. The first boot after a reset installs the
             # system apps over a minute or so; a build that stamps its own
             # placeholder date puts them all on the very same second.
-            "hist.install_days": "dumpsys package packages 2>/dev/null"
-                                 " | grep -E '^ +firstInstallTime=' | sed 's/.*=//'"
-                                 " | awk '{d=substr($0,1,10); n[d]++; if (!seen[$0]++) u[d]++}"
-                                 " END {for (d in n) print n[d], u[d], d}' | sort -k3 | head -60",
+            "hist.install_days": "L=$(dumpsys package packages 2>/dev/null"
+                                 " | grep -E '^ +firstInstallTime=' | sed 's/.*=//');"
+                                 " echo \"$L\" | cut -c1-10 | sort | uniq -c | sed 's/^/n /' | head -60;"
+                                 " echo \"$L\" | sort -u | cut -c1-10 | uniq -c | sed 's/^/u /' | head -60",
             "hist.dropbox": "dumpsys dropbox 2>/dev/null"
                             " | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} '"
-                            " | awk '{print $1, $3}' | sort | uniq -c",
+                            " | sed -E 's/^([0-9-]+) [0-9:]+ ([^ ]+).*/\\1 \\2/' | sort | uniq -c",
             # Device Owner Type 1 is a financed device (DevicePolicyManager).
             "hist.owners": "dpm list-owners 2>/dev/null; dumpsys device_policy 2>/dev/null"
                            " | grep -iE 'Device Owner Type|Enabled Device Admins|admin=' | head -8",
@@ -115,6 +136,22 @@ class HistoryCollector(Collector):
                              " | grep -oE 'Account \\{name=[^,]*, type=[A-Za-z0-9._-]+\\}'"
                              " | sort -u | sed 's/.*type=//; s/}$//' | sort | uniq -c;"
                              " echo accounts-read",
+            # Traces of earlier use, counted on the phone: no SIM number, network
+            # name, device address or account name comes back.
+            "hist.traces": "echo sims=$(dumpsys isub 2>/dev/null"
+                           " | grep -oE 'SubscriptionInfoInternal: id=[0-9]+' | sort -u | wc -l);"
+                           " echo esims=$(dumpsys isub 2>/dev/null | grep -A1 'Embedded subscriptions'"
+                           " | grep -oE 'SubscriptionInfoInternal: id=[0-9]+' | sort -u | wc -l);"
+                           " echo wifi=$(cmd wifi list-networks 2>/dev/null | tail -n +2 | wc -l);"
+                           # The paired list is only dumped while Bluetooth is on.
+                           " dumpsys bluetooth_manager 2>/dev/null | grep -qE 'State: +ON'"
+                           " && echo bluetooth=$(dumpsys bluetooth_manager 2>/dev/null"
+                           " | sed -n '/Bonded devices:/,/^ *$/p'"
+                           " | grep -cE '([0-9A-F]{2}:){5}[0-9A-F]{2}');"
+                           " echo accounts_added=$(dumpsys account 2>/dev/null"
+                           " | grep -c action_account_add);"
+                           " echo accounts_removed=$(dumpsys account 2>/dev/null"
+                           " | grep -c action_account_remove)",
             # Users and profiles. The user's name is cut away on the phone:
             # only id, flags and type come back.
             "hist.users": "dumpsys user 2>/dev/null"
@@ -127,7 +164,7 @@ class HistoryCollector(Collector):
         props = parse_props(raw.get("sys.props", ""))
         return {
             "manufactured": self._manufactured(props),
-            "setup_date": self._setup_date(raw.get("hist.install_days", "")),
+            "setup_date": self._setup_date(self._install_days(raw.get("hist.install_days", ""))),
             "boot_count": self._boot_count(raw.get("hist.boot_count", "")),
             "boot_reason": props.get("sys.boot.reason") or props.get("ro.boot.bootreason") or None,
             "boot_history": self._boot_history(raw.get("hist.boot_history", "")),
@@ -135,6 +172,8 @@ class HistoryCollector(Collector):
             "accounts": self._accounts(raw.get("hist.accounts", "")),
             "control": self._control(raw.get("hist.owners", ""), props),
             "users": self._users(raw.get("hist.users", "")),
+            "traces": {k: to_int(v) for k, v in parse_kv(raw.get("hist.traces", "")).items()
+                       if to_int(v) is not None} or None,
             "region": {k: v for k, v in {
                 "sales_code": props.get("ro.csc.sales_code") or props.get("ro.boot.sales_code"),
                 "carrier_id": props.get("ro.boot.carrierid"),
@@ -201,6 +240,24 @@ class HistoryCollector(Collector):
                 "source": "serial number (Samsung convention)"}
 
     @staticmethod
+    def _install_days(text: str) -> str:
+        """`n <count> <day>` and `u <distinct> <day>` lines, as the phone counts
+        them without awk, into `<count> <distinct> <day>`. Text already in
+        that form passes through."""
+        counts: dict[str, int] = {}
+        distinct: dict[str, int] = {}
+        plain = []
+        for line in text.splitlines():
+            m = re.match(r"\s*([nu])\s+(\d+)\s+(\d{4}-\d{2}-\d{2})\s*$", line)
+            if m:
+                (counts if m.group(1) == "n" else distinct)[m.group(3)] = int(m.group(2))
+            elif line.strip():
+                plain.append(line)
+        if not counts:
+            return text
+        return "\n".join(f"{n} {distinct.get(day, n)} {day}" for day, n in sorted(counts.items()))
+
+    @staticmethod
     def _setup_date(text: str) -> dict[str, Any] | None:
         days = []
         for line in text.splitlines():
@@ -248,16 +305,20 @@ class HistoryCollector(Collector):
             reason, _, stamp = line.rpartition(",")
             if not reason or not stamp.isdigit():
                 reason, stamp = line, ""
+            event = next((label for key, label in BOOT_EVENTS if key in reason.lower()), "restart")
             entries.append({
                 "reason": reason,
                 "epoch": int(stamp) if stamp else None,
                 "abnormal": any(k in reason.lower() for k in ABNORMAL_BOOT),
+                "event": event,
+                "maintenance": event in MAINTENANCE_EVENTS,
             })
         return entries
 
     @staticmethod
     def _crashes(text: str) -> dict[str, Any]:
         counts: dict[str, int] = {}
+        events: dict[str, list[str]] = {}
         days: list[str] = []
         for line in text.splitlines():
             m = re.match(r"\s*(\d+)\s+(\d{4}-\d{2}-\d{2})\s+(\S+)$", line)
@@ -267,8 +328,11 @@ class HistoryCollector(Collector):
             days.append(day)
             if tag in CRASH_TAGS:
                 counts[tag] = counts.get(tag, 0) + count
+            if tag in EVENT_TAGS:
+                events.setdefault(EVENT_TAGS[tag], []).append(day)
         return {
             "counts": counts,
+            "events": {label: sorted(set(d)) for label, d in events.items()},
             "labels": {tag: CRASH_TAGS[tag] for tag in counts},
             "since": min(days) if days else None,
             "available": bool(days),

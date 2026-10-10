@@ -23,6 +23,12 @@ jobs:
           p="$(python3 -c 'import json; print(json.load(open("ui/package.json"))["version"])')"
           [ "$v" = "$p" ] || { echo "VERSION $v but ui/package.json $p: run scripts/bump_version.sh"; exit 1; }
           grep -q "^## \[$v\]" CHANGELOG.md || { echo "CHANGELOG.md has no entry for $v"; exit 1; }
+      - name: Terms of use in sync
+        run: |
+          cmp -s TERMS.md ui/web/src/lib/terms.md || {
+            echo "TERMS.md and ui/web/src/lib/terms.md differ: edit one and copy it over the other"
+            exit 1
+          }
 
   backend:
     name: Backend tests

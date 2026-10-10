@@ -22,10 +22,9 @@ description: |
   runs from a temporary folder and is removed at the end of the session.
 
   PhoneVitals is an aid to understanding a phone's condition, for example
-  before buying or selling it. Its results are indicative and provided as is,
-  without warranty of any kind; they are not a certification, and the authors
-  accept no liability for decisions based on them or for any damage arising
-  from its use.
+  before buying or selling it: its results are indicative, not a
+  certification. It is provided as is, under its terms of use (TERMS.md in
+  the repository, also shown in the application).
 
   USB access needs the adb-support interface, which is not connected
   automatically:

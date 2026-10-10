@@ -121,6 +121,10 @@ public final class Agent {
                     emitAttestation(args);
                     exit(0);
                     return;
+                case "vibrate":
+                    vibrate(args.length > 1 ? parseMillis(args[1]) : 200);
+                    exit(0);
+                    return;
                 case "torch":
                     setTorch(args.length > 1 && "on".equals(args[1]),
                             args.length > 2 ? parseMillis(args[2]) : 0);
@@ -443,6 +447,33 @@ public final class Agent {
         @Override
         public Context getApplicationContext() {
             return this;
+        }
+
+        private Object activityManager;
+
+        /**
+         * Android 16's camera service asks ActivityManager for the caller's
+         * tasks, naming the context's package: the system context's
+         * ActivityManager would say "android" and be refused, so one bound
+         * to this context is built (hidden constructor, present since 1.0).
+         */
+        @Override
+        public Object getSystemService(String name) {
+            if (Context.ACTIVITY_SERVICE.equals(name)) {
+                if (activityManager == null) {
+                    try {
+                        java.lang.reflect.Constructor<android.app.ActivityManager> c =
+                                android.app.ActivityManager.class.getDeclaredConstructor(
+                                        Context.class, Handler.class);
+                        c.setAccessible(true);
+                        activityManager = c.newInstance(this, (Handler) null);
+                    } catch (Throwable t) {
+                        activityManager = super.getSystemService(name);
+                    }
+                }
+                return activityManager;
+            }
+            return super.getSystemService(name);
         }
     }
 
@@ -840,6 +871,32 @@ public final class Agent {
         return sb.toString();
     }
 
+    // --------------------------------------------------------------- vibrate
+
+    /**
+     * Run the vibration motor for `millis`, through the Vibrator API, for
+     * releases whose shell has no `cmd vibrator` (Android 7 and earlier).
+     */
+    @SuppressWarnings("deprecation")
+    private static void vibrate(long millis) {
+        try {
+            android.os.Vibrator v = (android.os.Vibrator)
+                    shellContext().getSystemService(Context.VIBRATOR_SERVICE);
+            JSONObject o = new JSONObject();
+            o.put("type", "vibrate");
+            o.put("ok", v != null && v.hasVibrator());
+            if (v != null && v.hasVibrator()) {
+                v.vibrate(millis);
+                emit(o);
+                Thread.sleep(millis);
+            } else {
+                emit(o);
+            }
+        } catch (Throwable t) {
+            emitFatal(t);
+        }
+    }
+
     // ----------------------------------------------------------------- torch
 
     /**
@@ -891,6 +948,9 @@ public final class Agent {
     private static final int PROPERTY_MANUFACTURING_DATE = 7;
     private static final int PROPERTY_FIRST_USAGE_DATE = 8;
     private static final int PROPERTY_STATE_OF_HEALTH = 10;
+    // Android 15: whether the health HAL recognises the cell as the original
+    // one (1) or a replacement (2); 0 when it cannot tell.
+    private static final int PROPERTY_PART_STATUS = 12;
     private static final String EXTRA_CYCLE_COUNT = "android.os.extra.CYCLE_COUNT";
 
     /**
@@ -942,6 +1002,19 @@ public final class Agent {
                 readLongProperty(bm, PROPERTY_STATE_OF_HEALTH, "state_of_health_percent", o, restricted);
                 readLongProperty(bm, PROPERTY_MANUFACTURING_DATE, "manufacturing_date_s", o, restricted);
                 readLongProperty(bm, PROPERTY_FIRST_USAGE_DATE, "first_usage_date_s", o, restricted);
+                if (Build.VERSION.SDK_INT >= 35) {
+                    // Zero is an answer here ("cannot tell"), so it is kept.
+                    try {
+                        long status = bm.getLongProperty(PROPERTY_PART_STATUS);
+                        if (status != Long.MIN_VALUE) {
+                            o.put("part_status", status);
+                        }
+                    } catch (SecurityException e) {
+                        restricted.put("part_status", String.valueOf(e.getMessage()));
+                    } catch (Throwable ignored) {
+                        // Not implemented by this device's health HAL.
+                    }
+                }
                 if (restricted.length() > 0) {
                     o.put("refused", restricted);
                 }
@@ -1202,6 +1275,7 @@ public final class Agent {
             } catch (Throwable t) {
                 o.put("ok", false);
                 o.put("error", String.valueOf(t.getMessage()));
+                o.put("where", frames(t, 6));
             }
             emit(o);
         }
@@ -1328,6 +1402,20 @@ public final class Agent {
         public void onConfigureFailed(CameraCaptureSession session) {
             done.countDown();
         }
+    }
+
+    /** The first frames of a stack trace, to tell which framework call refused. */
+    private static String frames(Throwable t, int count) {
+        StringBuilder sb = new StringBuilder();
+        StackTraceElement[] stack = t.getStackTrace();
+        for (int i = 0; i < Math.min(count, stack.length); i++) {
+            if (i > 0) {
+                sb.append(" < ");
+            }
+            sb.append(stack[i].getClassName().replaceAll(".*\\.", "")).append('.')
+                    .append(stack[i].getMethodName());
+        }
+        return sb.toString();
     }
 
     private static void describeImage(byte[] jpeg, JSONObject o) throws Exception {

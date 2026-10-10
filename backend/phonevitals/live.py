@@ -31,7 +31,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .adb import Adb, reap
-from .collectors.base import is_temperature_zone
+from .collectors.base import is_hal_temperature, is_temperature_zone
 
 log = logging.getLogger(__name__)
 
@@ -533,8 +533,12 @@ class PollingMonitor:
         # Fallback for devices where SELinux closes /sys/class/thermal to the
         # shell user, Pixel included: the thermal HAL publishes the same
         # sensors here, already in degrees Celsius.
+        # Live values only: the cached ones at the top of the dump change
+        # only when a threshold is crossed.
         "thermal_service": (
-            "dumpsys thermalservice 2>/dev/null | grep -m40 'Temperature{'"
+            "dumpsys thermalservice 2>/dev/null"
+            " | sed -n '/Current temperatures from HAL/,/Current cooling devices/p'"
+            " | grep -m40 'Temperature{'"
         ),
         "cpu_freq": (
             "grep -sH . /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq "
@@ -634,9 +638,11 @@ class PollingMonitor:
                 raw.get("thermal_service", ""),
             ):
                 try:
-                    thermal.setdefault(m.group(2).strip(), round(float(m.group(1)), 1))
+                    value = float(m.group(1))
                 except ValueError:
                     continue
+                if is_hal_temperature(m.group(2).strip(), value):
+                    thermal.setdefault(m.group(2).strip(), round(value, 1))
 
         freqs = {}
         for line in raw.get("cpu_freq", "").splitlines():

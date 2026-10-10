@@ -598,10 +598,55 @@ def check_tablet_and_custom_rom() -> list[str]:
     if "Mobile radio on a Wi-Fi-only model" not in radio:
         problems.append("a mobile radio inside a Wi-Fi-only model was not reported")
 
+    # A custom ROM without Google apps, a boot image one bulletin behind, and
+    # a recovery visit on an update day: all ordinary on such a phone.
+    plain = copy.deepcopy(tab)
+    plain["packages"] = {"has_play_services": False, "has_play_store": False,
+                         "system_count": 120, "third_party_count": 3}
+    plain["attestation"]["os_patch_level"] = "2026-08"
+    plain["history"] = {"boot_history": [
+        {"reason": "reboot,ota", "epoch": 1791400000, "event": "system update", "maintenance": False},
+        {"reason": "reboot,recovery", "epoch": 1791399000, "event": "recovery mode", "maintenance": True}]}
+    plain_report = AuthenticityEngine(plain, specdb=SpecDatabase()).run()
+    by_title = {f["title"]: f["severity"] for f in plain_report["findings"]}
+    if by_title.get("No Google services (custom ROM)") != "info":
+        problems.append("missing Google services on a custom ROM should be a note")
+    if by_title.get("Patch level disagrees between software and hardware") != "info":
+        problems.append("a one-month patch gap should be a note")
+    if by_title.get("Maintenance modes used") != "info":
+        problems.append("recovery used on an update day should be a note")
+
+    # A proximity sensor the firmware declares but the HAL no longer lists:
+    # disconnected with a screen replacement.
+    lost = copy.deepcopy(GENUINE)
+    lost.setdefault("sensors", {})["features"] = ["android.hardware.sensor.proximity",
+                                                  "android.hardware.sensor.accelerometer"]
+    lost["sensors"]["has"] = {"accelerometer": True, "proximity": False}
+    lost["sensors"]["count"] = 10
+    lost_titles = titles(AuthenticityEngine(lost, specdb=SpecDatabase()).run())
+    if "Components the system expects do not answer" not in lost_titles:
+        problems.append("a declared proximity sensor missing from the HAL was not reported")
+
+    # Market: a Japanese model used with an Italian SIM is noted, a global one is not.
+    from phonevitals.analysis.provenance import provenance
+    spec = {"markets": {"GPJ41": "Global", "GZPF0": "Japan"}}
+    for sku, expect in (("GZPF0", "Made for the Japan market"), ("GPJ41", "Global model")):
+        market = copy.deepcopy(GENUINE)
+        market["system"].setdefault("props", {}).update(
+            {"ro.boot.hardware.sku": sku, "gsm.sim.operator.iso-country": "it,"})
+        market["provenance"] = provenance(market, spec)
+        found = [f for f in AuthenticityEngine(market, specdb=SpecDatabase()).run()["findings"]
+                 if f["title"] == expect]
+        if not found:
+            problems.append(f"market finding missing for {sku}")
+        elif sku == "GPJ41" and "another market" in found[0]["detail"]:
+            problems.append("a global model was reported as made for another market")
+
     for problem in problems:
         print(f"  FAILED {problem}")
     if not problems:
-        print("  ok   tablet sensors, custom ROM, vendor patch, wording, modified verdict")
+        print("  ok   tablet sensors, custom ROM, vendor patch, wording, modified verdict,"
+              " missing parts, market")
     return problems
 
 

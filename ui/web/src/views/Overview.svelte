@@ -8,11 +8,14 @@
   import { cap, daysSince, num, plural, present } from '../lib/format.js';
   import { monthName } from '../lib/specs.js';
   import { attention, issueCount, pageOf, SEVERITY, verdict } from '../lib/report.js';
+  import { glance } from '../lib/glance.js';
+  import { TERMS_NOTICE } from '../lib/terms.js';
 
   const snap = $derived(app.snapshot);
   const s = $derived(snap?.summary ?? {});
   const v = $derived(verdict(snap));
   const todo = $derived(attention(snap));
+  const answers = $derived(glance(snap));
 
   const authIssues = $derived(issueCount(snap, 'authenticity'));
   const battery = $derived.by(() => {
@@ -48,25 +51,39 @@
       tone: days === null ? 'none' : ended ? 'warn' : days <= 120 ? 'ok' : days <= 365 ? 'warn' : 'crit',
     };
   });
+  // Age of the device itself, from the mainboard: the production month in a
+  // Samsung serial, the factory radio calibration, the soldered storage chip.
+  // Never from the battery, which may have been replaced. The first start
+  // after the last reset is something else: a reset or a new system restarts
+  // that clock.
+  const span = (days) => days < 31 ? plural(days, 'day') : days < 730
+    ? plural(Math.round(days / 30.4), 'month') : `${(days / 365).toFixed(1)} years`;
   const age = $derived.by(() => {
     const setup = s.setup_date;
-    const made = s.manufactured;
     const boots = num(s.boot_count);
-    if (!setup && !made) return { value: null, detail: 'Not recorded on this device', tone: 'none' };
-    const days = setup?.days_ago;
-    const value = days == null ? monthName(made.iso)
-      : days < 31 ? plural(days, 'day') : days < 730 ? plural(Math.round(days / 30.4), 'month')
-      : `${(days / 365).toFixed(1)} years`;
-    const detail = [setup ? 'in use since the last reset' : 'manufactured',
-                    boots !== null && plural(boots, 'boot')].filter(Boolean).join(' · ');
-    return { value, detail, tone: 'info' };
+    const board = s.board_date;
+    const origin = board?.iso ? { iso: `${board.iso}-15`, source: board.source } : null;
+    const reset = setup?.days_ago != null ? `reset ${span(setup.days_ago)} ago` : null;
+    if (origin) {
+      const days = daysSince(origin.iso);
+      return { label: 'Device age', value: days === null ? monthName(origin.iso.slice(0, 7)) : span(days),
+               detail: [`made ${monthName(origin.iso.slice(0, 7))}, from the ${origin.source}`, reset,
+                        boots !== null && plural(boots, 'boot')].filter(Boolean).join(' · '),
+               tone: 'info' };
+    }
+    if (setup?.days_ago != null) {
+      return { label: 'Since last reset', value: span(setup.days_ago),
+               detail: ['the device age is not recorded', boots !== null && plural(boots, 'boot')]
+                 .filter(Boolean).join(' · '), tone: 'info' };
+    }
+    return { label: 'Device age', value: null, detail: 'Not recorded on this device', tone: 'none' };
   });
 
   const tests = $derived.by(() => {
     const results = Object.values(app.results);
     const passed = results.filter((r) => r.status === 'passed').length;
     const failed = results.filter((r) => r.status === 'failed').length;
-    const available = app.tests.filter((t) => t.available).length;
+    const available = app.tests.filter((t) => t.available && t.id !== 'inspection').length;
     return {
       value: `${passed + failed}/${available}`,
       detail: failed ? `${failed} failed` : passed ? `${passed} passed` : 'None run yet',
@@ -113,6 +130,18 @@
     </div>
   </section>
 
+  {#if answers.length}
+    <section class="glance" aria-label="In short">
+      {#each answers as a (a.id)}
+        <button type="button" class="card answer tone-{a.tone}" onclick={() => navigate(a.page)}>
+          <span class="q"><Icon name={a.icon} size={15} /> {a.question}</span>
+          <b>{a.answer}</b>
+          <span class="why">{a.text}</span>
+        </button>
+      {/each}
+    </section>
+  {/if}
+
   <div class="stats">
     <Stat icon="shield" label="Authenticity" onclick={() => navigate('authenticity')}
           value={authIssues ? plural(authIssues, 'issue') : 'Consistent'}
@@ -124,7 +153,7 @@
           value={storage.value} tone={storage.tone} detail={storage.detail} />
     <Stat icon="patch" label="Security patch" onclick={() => navigate('specs')}
           value={patch.value} tone={patch.tone} detail={patch.detail} />
-    <Stat icon="clock" label="Age" onclick={() => navigate('health')}
+    <Stat icon="clock" label={age.label} onclick={() => navigate('health')}
           value={age.value} tone={age.tone} detail={age.detail} />
     <Stat icon="tests" label="Functional tests" onclick={() => navigate('tests')}
           value={tests.value} tone={tests.tone} detail={tests.detail} />
@@ -163,10 +192,35 @@
     </Section>
   </div>
 
-  {#if v.disclaimer}<p class="hint disclaimer">{v.disclaimer}</p>{/if}
+  <p class="hint disclaimer">{#if v.disclaimer}{v.disclaimer} {/if}{TERMS_NOTICE}
+    <button type="button" class="link" onclick={() => (app.terms = true)}>Read the terms</button></p>
 </div>
 
 <style>
+  .glance { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+  .answer {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 14px 16px;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    border-left: 3px solid var(--border-strong);
+    transition: transform .12s var(--ease);
+  }
+  .answer:hover { transform: translateY(-1px); }
+  .answer .q { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-3); }
+  .answer b { font-size: 19px; line-height: 1.25; }
+  .answer .why { font-size: 13px; color: var(--text-2); }
+  .answer.tone-ok { border-left-color: var(--ok); }
+  .answer.tone-ok b { color: var(--ok); }
+  .answer.tone-warn { border-left-color: var(--warn); }
+  .answer.tone-warn b { color: var(--warn); }
+  .answer.tone-crit { border-left-color: var(--crit); }
+  .answer.tone-crit b { color: var(--crit); }
+  .answer.tone-info { border-left-color: var(--info); }
   .page { display: flex; flex-direction: column; gap: 16px; }
   .hero {
     display: flex;
@@ -222,6 +276,8 @@
   .clear .ok { color: var(--ok); }
   .clear p { margin-top: 2px; color: var(--text-2); font-size: 13px; }
   .disclaimer { max-width: 100ch; }
+  .link { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
+  .link:hover { text-decoration: underline; }
   @media (max-width: 1100px) { .cols { grid-template-columns: 1fr; } }
   @media (max-width: 640px) { .hero { flex-direction: column; align-items: flex-start; } }
 </style>

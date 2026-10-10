@@ -489,10 +489,80 @@ def users_pen_capacity() -> bool:
     return ok
 
 
+def parts_and_events() -> bool:
+    """Part status, fingerprint counters, boot events and traces of use."""
+    from phonevitals.collectors.hardware import DisplayCollector
+    from phonevitals.collectors.peripherals import BiometricCollector
+
+    print("parts and events")
+    ok = True
+    disp = DisplayCollector().parse({"disp.surface": (
+        'Display 1 (HWC display 0): port=0 pnpId=GGL screenPartStatus=REPLACED '
+        'displayName="XX0-A00-00"')})
+    ok &= check(disp["screen_part_status"] == "REPLACED", "replaced screen read from SurfaceFlinger")
+    fp = BiometricCollector().parse({"bio.fingerprint": (
+        'Dumping for sensorId: 0, provider: FingerprintProvider\n'
+        '{"service":"FingerprintProvider","prints":[{"id":0,"count":2,"accept":85,'
+        '"reject":21,"lockout":0,"permanentLockout":0}]}\n')})["fingerprint"]
+    ok &= check(fp["stats"] == {"accept": 85, "reject": 21, "lockout": 0},
+                "fingerprint accept and reject counters")
+    hist = HistoryCollector().parse({
+        "hist.boot_history": "reboot,recovery,1790000300\nshutdown,battery,1790000200\n"
+                             "reboot,ota,1790000100",
+        "hist.dropbox": "      1 2026-09-20 SYSTEM_RECOVERY_LOG\n",
+        "hist.traces": "sims=3\nesims=1\nwifi=12\naccounts_added=4\naccounts_removed=2\n",
+    })
+    ok &= check([b["event"] for b in hist["boot_history"]]
+                == ["recovery mode", "battery ran flat", "system update"]
+                and hist["boot_history"][0]["maintenance"],
+                "boot reasons classified, recovery flagged as maintenance")
+    ok &= check(hist["crashes"]["events"] == {"recovery mode used": ["2026-09-20"]},
+                "recovery log entry dated")
+    ok &= check(hist["traces"] == {"sims": 3, "esims": 1, "wifi": 12,
+                                   "accounts_added": 4, "accounts_removed": 2},
+                "traces of earlier use counted, Bluetooth left out when unread")
+    from phonevitals.collectors.components import ComponentsCollector
+    ok &= check(ComponentsCollector._gpu("GLES: ARM, Mali-G715, OpenGL ES 3.2 v1.r54p3-00eac0")
+                == "ARM, Mali-G715, OpenGL ES 3.2", "GPU named from the GLES line")
+    port = ComponentsCollector._usb_port("        current_mode=ufp\n"
+                                         "        contaminant_presence_status=detected\n")
+    ok &= check(port == {"contaminant": "detected", "current_mode": "ufp"},
+                "USB port contaminant status read")
+    ok &= check(ComponentsCollector._privacy("    sensor=1\n      state_type=1\n    sensor=2\n"
+                                             "      state_type=2\n")
+                == {"microphone_blocked": True, "camera_blocked": False},
+                "privacy switch blocking the microphone read")
+    ids = InputCollector._hardware_ids("    2: goodix_ts0\n      Identifier: bus=0x0001, "
+                                       "vendor=0x27c6, product=0x0100, version=0x0100, x\n"
+                                       "    3: virtual\n      Identifier: bus=0x0000, vendor=0x0000, "
+                                       "product=0x0000, version=0x0000\n")
+    ok &= check(ids == {"goodix_ts0": "27c6:0100 v0100"}, "touch controller hardware ID, zeros skipped")
+    ok &= check(BatteryCollector._pairing("-2") == "mismatch" and BatteryCollector._pairing("1") == "paired",
+                "battery pairing states named")
+    ok &= check(StorageCollector._ufs_date({"manufacturing_date": "0x2108"}) == "2021-08"
+                and StorageCollector._mmc_date("8/2020") == "2020-08", "storage chip dates decoded")
+    from phonevitals.analysis.provenance import board_date
+    ok &= check(board_date({"battery": {"manufacturing_date": {"iso": "2025-01-01"}}}) is None,
+                "the battery never dates the phone")
+    ok &= check(board_date({"system": {"props": {"ril.rfcal_date": "2021.08.12"}}})
+                == {"iso": "2021-08", "source": "factory radio calibration"},
+                "board dated from the factory radio calibration")
+    # Android 7 has no awk: the phone sends per-day totals and distinct
+    # seconds as separate lines.
+    days = HistoryCollector._install_days("n  232 2008-12-31\nn    2 2021-03-11\n"
+                                          "u    1 2008-12-31\nu    2 2021-03-11\n")
+    ok &= check(days == "232 1 2008-12-31\n2 2 2021-03-11", "install days rebuilt without awk")
+    unlearned = BatteryCollector._health({}, 3180000, 3300000, 2)
+    ok &= check(unlearned[0] is None and "not learned" in unlearned[2],
+                "a gauge above design after 2 cycles is not a health figure")
+    return ok
+
+
 def main() -> int:
     ok = True
     for case in (battery, battery_sources, charging_units, history, wifi, telephony, cpu, storage, camera,
-                 input_devices, biometrics, security, identity, tablet, users_pen_capacity):
+                 input_devices, biometrics, security, identity, tablet, users_pen_capacity,
+                 parts_and_events):
         ok &= case()
     print()
     print("RESULT: " + ("PASSED" if ok else "FAILED"))

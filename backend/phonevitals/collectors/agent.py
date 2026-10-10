@@ -80,6 +80,11 @@ async def battery_facts(agent: AgentOnPhone) -> dict[str, Any]:
         iso = _date(first.get(key))
         if iso:
             facts[out] = iso
+    # BatteryManager part status (Android 15): 1 original, 2 replaced, 0 the
+    # health HAL cannot tell.
+    status = {0: "UNSUPPORTED", 1: "ORIGINAL", 2: "REPLACED"}.get(first.get("part_status"))
+    if status:
+        facts["part_status"] = status
     if first.get("refused"):
         facts["refused"] = sorted(first["refused"])
     return facts

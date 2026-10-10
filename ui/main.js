@@ -432,6 +432,9 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   configureSandbox();
+  // Chromium reports harmless platform notices on stderr at startup (X11
+  // atom cache, GPU probing); only fatal ones are worth showing outside --dev.
+  if (!DEV) app.commandLine.appendSwitch('log-level', '3');
 
   app.on('second-instance', () => {
     if (!win) return;

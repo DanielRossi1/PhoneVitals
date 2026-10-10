@@ -82,7 +82,12 @@
       "synopsis": "Understand the real condition of an Android phone",
       "maintainer": "PhoneVitals contributors",
       "vendor": "PhoneVitals contributors",
-      "syncDesktopName": true
+      "syncDesktopName": true,
+      "desktop": {
+        "entry": {
+          "StartupWMClass": "phonevitals"
+        }
+      }
     },
     "deb": {
       "depends": [

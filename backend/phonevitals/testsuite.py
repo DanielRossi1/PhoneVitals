@@ -187,7 +187,7 @@ class TestSuite:
         self._pattern_size: tuple[int, int] | None = None
         self._pushed_dex = False
         # Device settings changed by a test, with the value to put back.
-        self._saved_settings: dict[str, str] = {}
+        self._saved_settings: dict[str, str | None] = {}
         self._speaker_answered = asyncio.Event()
 
     async def _emit(self, payload: dict) -> None:
@@ -340,6 +340,12 @@ class TestSuite:
              "kind": "guided", "available": True,
              "description": "Plays tones at different frequencies on each "
                             "speaker and checks the recording."},
+            {"id": "inspection", "title": "Physical inspection", "kind": "guided",
+             "available": True,
+             "description": "A checklist of what software cannot see: water contact "
+                            "indicator, glue and gaps along the frame, screws, "
+                            "camera glass, ports. Filled in on the Hardware check "
+                            "page."},
             {"id": "torch", "title": "Flash", "kind": "guided",
              "available": bool(cameras.get("has_flash"))
                           or (cams > 0 and declared("android.hardware.camera.flash")
@@ -407,10 +413,11 @@ class TestSuite:
         """Record the operator's judgement on a guided test, or the interface's
         measurement for the loudspeaker test. `status` may only downgrade a
         verdict to "inconclusive"."""
-        result = self.results.get(test_id) or TestResult(test_id, test_id, "guided")
+        title = next((t["title"] for t in self.catalogue() if t["id"] == test_id), test_id)
+        result = self.results.get(test_id) or TestResult(test_id, title, "guided")
         result.status = "inconclusive" if status == "inconclusive" else (
             "passed" if passed else "failed")
-        result.outcome_detail = detail
+        result.outcome_detail = detail[:2000]
         result.finished_at = time.time()
         if result.started_at is None:
             result.started_at = result.finished_at
@@ -422,6 +429,31 @@ class TestSuite:
         return result.to_dict()
 
     # ------------------------------------------------------ device helpers
+
+    # Answers of a shell that has no such command: the motor did not move.
+    _NO_COMMAND = ("Error", "Unknown command", "No shell command implementation",
+                   "Can't find service", "not found")
+
+    async def _vibrate(self, ms: int) -> tuple[bool, str]:
+        """Run the motor for `ms`: the vibrator commands of Android 12 and 8,
+        then the agent, which uses the API every release has."""
+        for cmd in (f"cmd vibrator_manager synced oneshot {ms}", f"cmd vibrator vibrate {ms}"):
+            r = await self.adb.shell(self.serial, cmd, timeout=12)
+            text = (r.out + r.err).strip()
+            if r.ok and not any(k in text for k in self._NO_COMMAND):
+                return True, text[:120]
+        if await self._ensure_dex():
+            r = await self.adb.shell(self.serial, agent_command("vibrate", str(ms)),
+                                     timeout=12 + ms / 1000)
+            msg = next((m for m in map(parse_json_line, r.out.splitlines())
+                        if m and m.get("type") == "vibrate"), None)
+            if msg and msg.get("ok"):
+                return True, "agent"
+        return False, "no vibration command available"
+
+    def _privacy_blocks(self, sensor: str) -> bool:
+        privacy = (self.snapshot.get("components") or {}).get("privacy") or {}
+        return bool(privacy.get(f"{sensor}_blocked"))
 
     async def _ensure_dex(self) -> bool:
         """Make sure the agent is on the phone, pushing it if it is not.
@@ -447,17 +479,17 @@ class TestSuite:
         if name not in self._saved_settings:
             old = await self.adb.text(self.serial, f"settings get {name}",
                                       timeout=10)
-            if old and old != "null":
-                self._saved_settings[name] = old
+            # A setting that did not exist is deleted again afterwards.
+            self._saved_settings[name] = old if old and old != "null" else None
         await self.adb.shell(self.serial, f"settings put {name} {value}",
                              timeout=10)
 
     async def _restore_settings(self) -> None:
         saved, self._saved_settings = self._saved_settings, {}
         for name, value in saved.items():
-            await self.adb.shell(
-                self.serial, f"settings put {name} {shlex.quote(value)}",
-                timeout=10)
+            command = (f"settings delete {name}" if value is None
+                       else f"settings put {name} {shlex.quote(value)}")
+            await self.adb.shell(self.serial, command, timeout=10)
 
     # ------------------------------------------------------- sensor capture
 
@@ -752,20 +784,23 @@ class TestSuite:
             # The initial silence is the reference: measure the quiet first,
             # then start the motor.
             await asyncio.sleep(baseline_s)
-            for cmd in (f"cmd vibrator_manager synced oneshot {int(pulse_s * 1000)}",
-                        f"cmd vibrator vibrate {int(pulse_s * 1000)}"):
-                sent = time.monotonic() - t0
-                r = await self.adb.shell(self.serial, cmd, timeout=10)
-                if r.ok and "Error" not in r.out and "Unknown command" not in r.out:
-                    marks["sent"] = sent
-                    marks["acked"] = time.monotonic() - t0
-                    break
+            sent = time.monotonic() - t0
+            ok, how = await self._vibrate(int(pulse_s * 1000))
+            if ok:
+                done = time.monotonic() - t0
+                if how == "agent":
+                    # The agent needs a second to start and returns once the
+                    # pulse is over: the motor ran during the last pulse_s.
+                    sent = done = max(sent, done - pulse_s)
+                marks["sent"] = sent
+                marks["acked"] = done
             await self._emit({"type": "test_step", "test": "vibration_imu",
                               "step": "pulse sent", "accepted": "sent" in marks})
 
         # Generous tail: the pulse must fit in the trace even when the command
-        # goes out late (a refused first attempt costs another round trip).
-        total = baseline_s + pulse_s + 2.0
+        # goes out late -- refused attempts cost round trips, and on releases
+        # without a vibrator shell command the agent needs a second to start.
+        total = baseline_s + pulse_s + 4.0
         samples = await self._capture([SENSOR_TYPE["accelerometer"]], total,
                                       during=fire)
         accel = samples.get(SENSOR_TYPE["accelerometer"], [])
@@ -886,16 +921,29 @@ class TestSuite:
         # other things that are "disabled" while Wi-Fi itself is on, and the
         # radio would then be switched off at the end of the test.
         state = await self.adb.shell(self.serial, "cmd wifi status", timeout=15)
-        was_off = bool(self._WIFI_OFF_RE.search(state.out))
+        if "No shell command implementation" in (state.out + state.err):
+            was_off = (await self.adb.text(self.serial, "settings get global wifi_on",
+                                           timeout=10)).strip() == "0"
+        else:
+            was_off = bool(self._WIFI_OFF_RE.search(state.out))
         try:
             if was_off:
                 await self.adb.shell(self.serial, "svc wifi enable", timeout=15)
                 await asyncio.sleep(3.0)
 
-            await self.adb.shell(self.serial, "cmd wifi start-scan", timeout=20)
-            await asyncio.sleep(4.0)
-            scan = await self.adb.shell(self.serial, "cmd wifi list-scan-results",
-                                        timeout=25)
+            start = await self.adb.shell(self.serial, "cmd wifi start-scan", timeout=20)
+            legacy = "No shell command implementation" in (start.out + start.err)
+            if legacy:
+                # Android 7 and earlier: no wifi shell command. The service
+                # still lists the results of its own periodic scans.
+                scan = await self.adb.shell(
+                    self.serial,
+                    "dumpsys wifi 2>/dev/null | sed -n '/Latest scan results:/,/^$/p' | head -80",
+                    timeout=25)
+            else:
+                await asyncio.sleep(4.0)
+                scan = await self.adb.shell(self.serial, "cmd wifi list-scan-results",
+                                            timeout=25)
         finally:
             # Leave the radio as it was found.
             if was_off:
@@ -903,11 +951,17 @@ class TestSuite:
 
         networks: list[dict[str, Any]] = []
         for line in scan.out.splitlines():
-            bssid = self._BSSID_RE.search(line)
-            freq = self._FREQ_RE.search(line)
+            # Legacy table row: BSSID, frequency, RSSI, age, SSID, flags.
+            row = re.search(r"((?:[0-9a-f]{2}:){5}[0-9a-f]{2})\s+(\d{4})\s+(-\d+)\s", line)
+            if row:
+                bssid, freq, rssi = row, re.match(r"(\d+)", row.group(2)), \
+                    re.match(r"(-\d+)", row.group(3))
+            else:
+                bssid = self._BSSID_RE.search(line)
+                freq = self._FREQ_RE.search(line)
+                rssi = self._RSSI_RE.search(line)
             if not (bssid and freq):
                 continue
-            rssi = self._RSSI_RE.search(line)
             mhz = int(freq.group(1))
             networks.append({
                 "bssid": bssid.group(1),
@@ -975,15 +1029,7 @@ class TestSuite:
             for i in range(repeat):
                 if i:
                     await asyncio.sleep(0.25)
-                r = await self.adb.shell(
-                    self.serial, f"cmd vibrator_manager synced oneshot {ms}",
-                    timeout=12)
-                ok = r.ok and "Error" not in r.out and "Unknown command" not in r.out
-                if not ok:
-                    r = await self.adb.shell(
-                        self.serial, f"cmd vibrator vibrate {ms}", timeout=12)
-                    ok = r.ok and "Error" not in r.out
-                response = (r.out or r.err).strip()[:120]
+                ok, response = await self._vibrate(ms)
                 if not ok:
                     break
             accepted.append({"sequence": label, "accepted": ok,
@@ -1247,9 +1293,12 @@ class TestSuite:
     async def _write_speed(self) -> float | None:
         # Timed on the phone, so adb latency does not count; conv=fsync makes
         # the figure include reaching the flash, not just the page cache.
+        # Android 7's dd refuses conv= ("conv option disabled"): there the
+        # write is followed by a sync, which reaches the flash as well.
+        write = f"dd if=/dev/zero of={self.BENCH_FILE} bs=1048576 count={self.BENCH_MB}"
         cmd = (f"rm -f {self.BENCH_FILE}; s=$(date +%s%N); "
-               f"dd if=/dev/zero of={self.BENCH_FILE} bs=1048576 count={self.BENCH_MB} "
-               f"conv=fsync 2>/dev/null; e=$(date +%s%N); echo $((e - s))")
+               f"{write} conv=fsync 2>/dev/null || {{ {write} 2>/dev/null; sync; }}; "
+               f"e=$(date +%s%N); echo $((e - s)) 2>/dev/null")
         started = time.monotonic()
         r = await self.adb.shell(self.serial, cmd, timeout=120)
         host_s = time.monotonic() - started
@@ -1390,6 +1439,17 @@ class TestSuite:
                                       "slows down and the estimate is unreliable. Repeat below "
                                       "80%.")
 
+        # With the screen off the phone dozes within minutes, and then Android
+        # no longer lets the agent start: keep it awake while plugged in (7 =
+        # AC, USB and wireless) and put the setting back at the end.
+        await self._change_setting("global", "stay_on_while_plugged_in", "7")
+        await self.adb.shell(self.serial, "input keyevent KEYCODE_WAKEUP", timeout=10)
+        try:
+            return await self._measure_capacity(result)
+        finally:
+            await self._restore_settings()
+
+    async def _measure_capacity(self, result: TestResult) -> dict[str, Any]:
         samples: list[dict[str, Any]] = []
         started = time.monotonic()
         estimate: dict[str, Any] = {}
@@ -1400,8 +1460,11 @@ class TestSuite:
             chunk = [m for m in map(parse_json_line, r.out.splitlines())
                      if m and m.get("type") == "battery"]
             if not chunk:
+                # Another session on the same phone (the live view, a second
+                # window) may have removed the agent when it finished: put it
+                # back once before giving up.
                 silent += 1
-                if silent >= 2:
+                if silent >= 3 or not await self._ensure_dex():
                     break
                 continue
             silent = 0
@@ -1510,6 +1573,19 @@ class TestSuite:
         rated = {f"cpu{c['index']}": c.get("max_khz") for c in cores
                  if isinstance(c.get("index"), int) and c.get("max_khz")}
         n = max(1, len(rated) or (self.snapshot.get("cpu") or {}).get("core_count") or 8)
+        # A firmware policy may cap a cluster below what the silicon can do
+        # (seen: 1.59 of 2.19 GHz on an Android 7 Snapdragon 821). That is a
+        # setting, not a fault: such cores are judged against the cap.
+        caps_raw = await self.adb.text(
+            self.serial, "grep -sH . /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_max_freq"
+            " 2>/dev/null | sed -e 's|^/sys/devices/system/cpu/||' -e 's|/cpufreq/scaling_max_freq||'"
+            " -e 's|:|=|'", timeout=10)
+        capped: dict[str, int] = {}
+        for line in caps_raw.splitlines():
+            name, _, value = line.partition("=")
+            if value.strip().isdigit() and rated.get(name) and int(value) < rated[name] * 0.95:
+                capped[name] = int(value)
+                rated[name] = int(value)
         uptime_before = await self._uptime()
 
         before = PollingMonitor._shape(await self.adb.batch(self.serial, PollingMonitor.COMMANDS,
@@ -1558,6 +1634,7 @@ class TestSuite:
 
         result.measurements = {
             "cores": n, "duration_s": self.STRESS_S,
+            "capped_khz": capped or None,
             "peak_ratio": {k: round(v, 2) for k, v in reached.items()},
             "sustained_ratio_big_cores": round(big_held, 2) if big_held is not None else None,
             "temperature_start_c": temp_start,
@@ -1582,9 +1659,13 @@ class TestSuite:
                                       "frequency under full load. A throttled or limited "
                                       "processor, or a battery that cannot deliver the "
                                       "current." + heat + sustain)
+        cap_note = (f" The firmware caps {', '.join(sorted(capped))} at "
+                    f"{max(capped.values()) / 1e6:.2f} GHz, below what the chip can do: "
+                    "a setting of this system, so those cores were judged against it."
+                    if capped else "")
         return await self._finish(result, "passed",
                                   f"All {len(reached)} cores reached their rated frequency and the "
-                                  "phone stayed up." + heat + sustain)
+                                  "phone stayed up." + heat + sustain + cap_note)
 
     async def _uptime(self) -> float | None:
         text = await self.adb.text(self.serial, "cat /proc/uptime", timeout=10)
@@ -1676,6 +1757,11 @@ class TestSuite:
         result = TestResult("microphone", "Microphone", "automatic",
                             status="running", started_at=time.time())
         await self._publish(result)
+        if self._privacy_blocks("microphone"):
+            return await self._finish(result, "inconclusive",
+                                      "Microphone access is switched off in the phone's privacy "
+                                      "settings (Quick Settings › Microphone access): every app "
+                                      "records silence. Turn it on and repeat.")
         if not await self._ensure_dex():
             return await self._finish(result, "inconclusive", "The agent could not be started.")
 
@@ -1743,7 +1829,24 @@ class TestSuite:
     async def _bt_state(self) -> str:
         out = await self.adb.text(self.serial, "dumpsys bluetooth_manager 2>/dev/null"
                                   " | grep -m1 -iE '^ *state:'", timeout=10)
-        return out.split(":", 1)[-1].strip().upper() if ":" in out else ""
+        if ":" in out:
+            return out.split(":", 1)[-1].strip().upper()
+        # Android 7 prints no state while the radio is off ("Bluetooth Service
+        # not connected"): the setting says whether it is on.
+        setting = (await self.adb.text(self.serial, "settings get global bluetooth_on",
+                                       timeout=10)).strip()
+        return {"0": "OFF", "1": "ON"}.get(setting, "")
+
+    async def _bt_switch(self, on: bool) -> bool:
+        """`cmd bluetooth_manager` (Android 8+), then `svc bluetooth`, then the
+        `svc BT` some vendors ship on older releases."""
+        word = "enable" if on else "disable"
+        for cmd in (f"cmd bluetooth_manager {word}", f"svc bluetooth {word}", f"svc BT {word}"):
+            r = await self.adb.shell(self.serial, cmd, timeout=15)
+            text = (r.out + r.err).strip()
+            if "Success" in text or (r.ok and not text):
+                return True
+        return False
 
     async def _test_bluetooth(self, **_) -> dict[str, Any]:
         result = TestResult("bluetooth", "Bluetooth radio", "automatic",
@@ -1755,8 +1858,7 @@ class TestSuite:
                                       "The Bluetooth service did not report its state.")
         if before == "ON":
             return await self._finish(result, "passed", "Bluetooth is on and the radio is up.")
-        r = await self.adb.shell(self.serial, "cmd bluetooth_manager enable", timeout=15)
-        if "Success" not in r.out:
+        if not await self._bt_switch(True):
             return await self._finish(result, "inconclusive",
                                       "Bluetooth could not be switched on from here: switch it on "
                                       "on the phone and repeat.")
@@ -1769,7 +1871,7 @@ class TestSuite:
                 if state == "ON":
                     break
         finally:
-            await self.adb.shell(self.serial, "cmd bluetooth_manager disable", timeout=15)
+            await self._bt_switch(False)
         result.measurements = {"turned_on_after_s": waited if state == "ON" else None}
         if state == "ON":
             return await self._finish(result, "passed",
@@ -1910,11 +2012,23 @@ class TestSuite:
         result = TestResult("camera", "Cameras", "guided", status="running",
                             started_at=time.time())
         await self._publish(result)
+        if self._privacy_blocks("camera"):
+            return await self._finish(result, "inconclusive",
+                                      "Camera access is switched off in the phone's privacy "
+                                      "settings (Quick Settings › Camera access): every app gets "
+                                      "a black picture. Turn it on and repeat.")
         if not await self._ensure_dex():
             return await self._finish(result, "inconclusive", "The agent could not be started.")
         r = await self.adb.shell(self.serial, agent_command("camera"), timeout=90)
         shots = [m for m in map(parse_json_line, r.out.splitlines())
                  if m and m.get("type") == "camera"]
+        # Older releases do not grant the debugging shell the camera
+        # permission at all: the cameras are not at fault.
+        if shots and all("permission" in str(x.get("error", "")).lower() for x in shots):
+            result.measurements = {"photos": shots}
+            return await self._finish(result, "inconclusive",
+                                      "This Android version does not let the debugging shell use "
+                                      "the cameras. Check them with the phone's camera app.")
         notes = []
         for shot in shots:
             if not shot.get("ok"):

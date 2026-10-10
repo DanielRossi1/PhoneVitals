@@ -28,6 +28,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from .provenance import board_date
+
 # Weight on the final score. A critical finding counts several times a
 # warning: an inter-partition inconsistency has no innocent explanation.
 SEVERITY_WEIGHT = {
@@ -140,13 +142,21 @@ class AuthenticityEngine:
         self._check_serial_coherence()
         self._check_expected_specs()
         self._check_battery()
+        self._check_battery_learned()
+        self._check_battery_pairing()
+        self._check_battery_counter()
         self._check_storage_wear()
         self._check_security_patch()
         self._check_vendor_patch()
         self._check_google_services()
         self._check_sensor_inventory()
         self._check_components()
+        self._check_part_status()
+        self._check_declared_hardware()
+        self._check_fingerprint_reader()
+        self._check_usb_port()
         self._check_history()
+        self._check_provenance()
 
         return self._report()
 
@@ -211,15 +221,23 @@ class AuthenticityEngine:
         level = att.get("security_level", "")
         label = att.get("security_label", "")
 
+        # Hardware key attestation became mandatory with Android 8.0: a phone
+        # launched before it may only have the software implementation.
+        api = (self.get("system", "props", default={}) or {}).get("ro.product.first_api_level", "")
+        launched_before_oreo = api.isdigit() and int(api) < 26
         if level == "software":
             self.add(
-                "warning", "integrity",
+                "info" if launched_before_oreo else "warning", "integrity",
                 "Software-only attestation",
                 "The certificate was issued by the operating system rather than "
                 "the secure environment: no hardware key backs it, so the "
                 "document is worth exactly as much as the system properties it "
-                "is supposed to confirm. This happens on emulators and on "
-                "devices without Google certification.",
+                "is supposed to confirm."
+                + (" That is normal on a phone launched before Android 8, when "
+                   "hardware attestation was not yet required."
+                   if launched_before_oreo else
+                   " This happens on emulators and on devices without Google "
+                   "certification."),
                 strength="proven", security_level=level, label=label)
         else:
             self.add(
@@ -343,15 +361,27 @@ class AuthenticityEngine:
         if declared_patch and attested_patch:
             # Attestation reports year and month; the property also has the day.
             if declared_patch[:7] != attested_patch[:7]:
+                # One month apart is how custom ROMs and staged updates often
+                # look: the system takes the new bulletin date before the boot
+                # image does. More than that is worth a warning.
+                try:
+                    d, a = (dt.date.fromisoformat(x[:7] + "-01")
+                            for x in (declared_patch, attested_patch))
+                    months = abs((d.year - a.year) * 12 + d.month - a.month)
+                except ValueError:
+                    months = 99
                 self.add(
-                    "warning", "integrity",
+                    "info" if months <= 1 else "warning", "integrity",
                     "Patch level disagrees between software and hardware",
                     f"The properties declare security patch {declared_patch}, the "
-                    f"secure environment attests {attested_patch}. This can "
-                    "indicate a partial update, or a version declared more recent "
-                    "than the one actually installed.",
+                    f"secure environment attests {attested_patch}."
+                    + (" One month apart is common when the system carries a newer "
+                       "bulletin date than the boot image, as on many custom ROMs."
+                       if months <= 1 else
+                       " This can indicate a partial update, or a version declared "
+                       "more recent than the one actually installed."),
                     strength="proven", declared=declared_patch,
-                    attested=attested_patch)
+                    attested=attested_patch, months_apart=months)
 
         # Hardware-signed identifiers.
         attested_ids = att.get("attested_ids") or {}
@@ -400,6 +430,8 @@ class AuthenticityEngine:
                 "secure environment Google certified, not from software.",
                 strength="proven", fingerprint=fingerprint,
                 genuine_hardware=level != "software")
+        elif att.get("root_known") is False and level == "software":
+            pass  # the software root is implied by the finding above
         elif att.get("root_known") is False:
             self.add(
                 "warning", "integrity",
@@ -845,7 +877,7 @@ class AuthenticityEngine:
                 "IMEI and specifications included, must be treated as declared by "
                 "the installed software rather than verified by the hardware.",
                 strength="proven", state=state, locked=bl.get("locked"),
-                modification=bl.get("locked") is False,
+                modification=bl.get("locked") is False or state == "yellow",
             )
 
     def _check_build_signing(self) -> None:
@@ -906,15 +938,25 @@ class AuthenticityEngine:
         ("ro.modversion", ""),
     )
 
-    def _check_custom_rom(self) -> None:
+    def _custom_rom(self) -> tuple[str, str]:
+        """(name, version) of an aftermarket distribution, or ("", "")."""
         props = self.get("system", "props", default={}) or {}
-        name = version = ""
         for prop, label in self.CUSTOM_ROMS:
             if props.get(prop):
-                name, version = label or props[prop], props[prop] if label else ""
-                break
+                return (label or props[prop]), (props[prop] if label else "")
+        name = self.get("packages", "os_distribution") or ""
+        return name, (props.get("ro.build.display.id", "") if name == "GrapheneOS" else "")
+
+    def _custom_rom_name(self) -> str:
+        return self._custom_rom()[0]
+
+    def _check_custom_rom(self) -> None:
+        props = self.get("system", "props", default={}) or {}
+        name, version = self._custom_rom()
         if not name:
             return
+        relocked = (self.get("security", "bootloader", "locked") is True
+                    and self.get("security", "verified_boot", "state") == "yellow")
         release = props.get("ro.lineage.releasetype", "")
         launched = int(props.get("ro.product.first_api_level", "0") or 0) \
             if props.get("ro.product.first_api_level", "").isdigit() else None
@@ -928,11 +970,16 @@ class AuthenticityEngine:
             "manufacturer's firmware."
             + (f" The device launched with {ANDROID_BY_API.get(launched, f'API {launched}')}"
                f" and now runs Android {android}." if launched and android else "")
-            + " A custom ROM is legitimate, but it requires an unlocked "
-            "bootloader, apps that rely on Play Integrity (banking, payments) may "
-            "refuse to run, and the manufacturer's warranty and updates no longer "
-            "apply. Ask the seller whether the original firmware is still "
-            "available to reinstall.",
+            + (" The bootloader was locked again with the distribution's own key, "
+               "so verified boot still protects the system: it checks against that "
+               "key instead of the manufacturer's. Some apps that rely on Play "
+               "Integrity (banking, payments) may refuse to run."
+               if relocked else
+               " A custom ROM is legitimate, but it requires an unlocked "
+               "bootloader, apps that rely on Play Integrity (banking, payments) may "
+               "refuse to run, and the manufacturer's warranty and updates no longer "
+               "apply. Ask the seller whether the original firmware is still "
+               "available to reinstall."),
             strength="proven", rom=name, rom_version=version,
             first_api_level=launched,
         )
@@ -1204,10 +1251,120 @@ class AuthenticityEngine:
                 strength="measured",
             )
 
+    def _check_provenance(self) -> None:
+        prov = self.get("provenance", default={}) or {}
+        if not prov:
+            return
+        market, used = prov.get("market"), prov.get("sim_countries") or prov.get("network_countries") or []
+        codes = [f"{label} {prov[key]}" for key, label in (
+            ("hardware_model", "model number"), ("sales_code", "sales code"),
+            ("warranty_region", "warranty region"), ("firmware_region", "firmware region"),
+            ("customer_id", "customer ID"),
+            ("board_revision", "board revision")) if prov.get(key)]
+        if not market and not codes:
+            return
+        countries = prov.get("market_countries") or []
+        elsewhere = bool(countries and used and not set(used) & set(countries))
+        self.add(
+            "info", "history",
+            (f"Made for the {market} market" if market != "Global"
+             else "Global model") if market else "Market codes",
+            ((f"The {prov['market_source']} says the phone was built for "
+              f"{'sale worldwide' if market == 'Global' else market}. " if market else "")
+             + ("Codes it carries: " + ", ".join(codes) + ". " if codes else "")
+             + (f"It is now used with a SIM from {', '.join(used)}. " if used else "")
+             + ("A model for another market is legal to own, but check the warranty "
+                "(often valid only in the market of sale) and the mobile bands supported."
+                + (" Japanese models also keep a camera shutter sound that cannot be "
+                   "silenced." if "Japan" in countries else "")
+                if elsewhere else "")).strip(),
+            strength="circumstantial", **{k: v for k, v in prov.items() if v},
+        )
+
+    def _check_events(self, hist: dict[str, Any]) -> None:
+        """What the phone remembers having happened, and the traces left by use."""
+        def day(epoch: int | None) -> str:
+            return dt.datetime.fromtimestamp(epoch, dt.UTC).date().isoformat() if epoch else "?"
+
+        boots = hist.get("boot_history") or []
+        maintenance = [b for b in boots if b.get("maintenance")]
+        dropbox = ((hist.get("crashes") or {}).get("events") or {})
+        if maintenance or dropbox.get("recovery mode used"):
+            updates = {day(b.get("epoch")) for b in boots if b.get("event") == "system update"}
+            seen: dict[str, str] = {}
+            for b in maintenance:
+                seen.setdefault(day(b.get("epoch")), b["event"])
+            for d in dropbox.get("recovery mode used", []):
+                seen.setdefault(d, "recovery mode")
+            when = [f"{event} on {d}" + (", the day of a system update" if d in updates else "")
+                    for d, event in sorted(seen.items(), reverse=True)]
+            # Updates on phones without seamless updates go through recovery:
+            # when every visit matches an update day, that is all it was.
+            routine = all(d in updates for d in seen)
+            self.add(
+                "info" if routine else "warning", "history", "Maintenance modes used",
+                "The phone records being started in a maintenance mode: "
+                + "; ".join(dict.fromkeys(when)) + ". Recovery and bootloader modes "
+                "are where firmware is flashed and the phone is wiped. After a "
+                "factory reset or an update this is expected; ask the seller what "
+                "was done otherwise.",
+                strength="measured", events=when,
+            )
+        notable = [b for b in boots if b.get("event") in (
+            "overheating shutdown", "battery ran flat", "power failure",
+            "kernel panic", "watchdog reset")]
+        if boots:
+            timeline = "; ".join(f"{day(b.get('epoch'))} {b.get('event', b.get('reason'))}"
+                                 for b in boots[:8])
+            self.add(
+                "info", "history", "Restarts the phone remembers",
+                f"Most recent first: {timeline}."
+                + (" Shutdowns from overheating, a flat battery or a power failure "
+                   "point at the battery or the charging circuit when they repeat."
+                   if notable else ""),
+                strength="measured", boots=boots[:20],
+            )
+        if dropbox.get("file system repaired at boot"):
+            self.add(
+                "info", "history", "File system repaired at boot",
+                "On " + ", ".join(dropbox["file system repaired at boot"]) + " the phone "
+                "had to repair its storage while starting, which follows a sudden "
+                "power loss or failing storage.",
+                strength="measured")
+
+        traces = hist.get("traces") or {}
+        parts = []
+        if traces.get("sims"):
+            parts.append(f"{traces['sims']} SIM card{'s' if traces['sims'] > 1 else ''} "
+                         "used in it")
+        if traces.get("esims"):
+            parts.append(f"{traces['esims']} eSIM profile{'s' if traces['esims'] > 1 else ''} "
+                         "still installed")
+        if traces.get("wifi"):
+            parts.append(f"{traces['wifi']} saved Wi-Fi network{'s' if traces['wifi'] > 1 else ''}")
+        if traces.get("bluetooth"):
+            parts.append(f"{traces['bluetooth']} paired Bluetooth "
+                         f"device{'s' if traces['bluetooth'] > 1 else ''}")
+        if traces.get("accounts_added") or traces.get("accounts_removed"):
+            parts.append(f"accounts added {traces.get('accounts_added', 0)} times and "
+                         f"removed {traces.get('accounts_removed', 0)} times since setup")
+        if parts:
+            self.add(
+                "warning" if traces.get("esims") else "info", "history",
+                "Traces of earlier use",
+                "The phone keeps " + ", ".join(parts) + ". Only the counts were read. "
+                "A factory reset clears them"
+                + (", but delete the eSIM profiles first, or ask the carrier: an eSIM "
+                   "left on a sold phone keeps the seller's line on it."
+                   if traces.get("esims") else "."),
+                strength="measured", **traces)
+
     def _check_history(self) -> None:
         hist = self.get("history", default={}) or {}
         if not hist:
             return
+
+        self._check_events(hist)
 
         users = hist.get("users") or {}
         if users.get("read"):
@@ -1265,15 +1422,15 @@ class AuthenticityEngine:
                     strength="measured",
                 )
 
-        made = hist.get("manufactured")
+        made = board_date(self.s)
         setup = hist.get("setup_date")
         boots = hist.get("boot_count")
         if made:
             self.add(
                 "info", "history", f"Manufactured around {made['iso']}",
-                f"The serial number encodes the production month: {made['iso']}. "
-                "It dates the device itself, regardless of resets or software "
-                "updates.",
+                f"The {made['source']} dates the mainboard to {made['iso']}. It dates "
+                "the device itself, regardless of resets, software updates or a "
+                "replaced battery.",
                 strength="circumstantial", **made,
             )
         if setup or boots is not None:
@@ -1283,10 +1440,13 @@ class AuthenticityEngine:
                 parts.append(f"first started on {when}, after its last factory reset")
             if boots is not None:
                 parts.append(f"{boots} boots since then")
+            sentence = ("The phone was " + ", ".join(parts) if setup
+                        else f"The phone has started {boots} times; when it was first set "
+                             "up is not recorded")
             self.add(
                 "info", "history", "Time in use",
-                "The phone was " + ", ".join(parts) + ". A phone sold as new should "
-                "show a first start of a few days ago and a handful of boots.",
+                sentence + ". A phone sold as new should show a first start of a few "
+                "days ago and a handful of boots.",
                 strength="measured",
                 setup_date=setup.get("iso") if setup else None, boot_count=boots,
             )
@@ -1294,7 +1454,7 @@ class AuthenticityEngine:
                 self.add(
                     "warning", "history", "First started before it was made",
                     f"The system was first started on {setup['iso']}, before the "
-                    f"production month in the serial number ({made['iso']}). One of "
+                    f"production month of the mainboard ({made['iso']}). One of "
                     "the two has been altered, or the clock was wrong at setup.",
                     strength="circumstantial",
                 )
@@ -1395,6 +1555,78 @@ class AuthenticityEngine:
                 + " Occasional app crashes are normal; repeated kernel panics are not.",
                 strength="measured", counts=counts, abnormal_boots=abnormal,
             )
+
+    # Year each Android release came out, for the earliest a device launched
+    # with it can have been made.
+    API_YEAR = {21: 2014, 22: 2015, 23: 2015, 24: 2016, 25: 2016, 26: 2017, 27: 2017,
+                28: 2018, 29: 2019, 30: 2020, 31: 2021, 32: 2022, 33: 2022, 34: 2023,
+                35: 2024, 36: 2025}
+
+    def _check_battery_counter(self) -> None:
+        """A cycle counter near zero on a phone that is years old."""
+        cycles = self.get("battery", "cycle_count")
+        if cycles is None or cycles >= 20:
+            return
+        made = board_date(self.s)
+        props = self.get("system", "props", default={}) or {}
+        api = props.get("ro.product.first_api_level", "")
+        year = int(made["iso"][:4]) if made else self.API_YEAR.get(int(api)) if api.isdigit() else None
+        if not year or dt.date.today().year - year < 2:
+            return
+        self.add(
+            "info", "components", "Battery counter almost at zero",
+            f"The battery reports {cycles} charge cycles on a phone from around {year}. "
+            "Either the battery was replaced recently, or its gauge was reset, which "
+            "some repairs and firmware flashes do. Ask the seller: a replacement "
+            "explains it, otherwise the cycle count says nothing about wear.",
+            strength="circumstantial", cycles=cycles, since_year=year)
+
+    def _check_battery_pairing(self) -> None:
+        pairing = self.get("battery", "pairing")
+        if pairing == "mismatch":
+            self.add(
+                "warning", "components", "Battery taken from another phone",
+                "The battery carries the pairing of a different phone: it was fitted "
+                "here after being used in another unit of the same model. It may be "
+                "genuine, but it is second-hand, and its wear is unknown.",
+                strength="measured", pairing=pairing)
+        elif pairing == "paired":
+            self.add(
+                "ok", "components", "Battery paired to this phone",
+                "The battery's memory holds this phone's pairing. It is either the "
+                "battery the phone left the factory with or a new one fitted to it; "
+                "a battery taken from another phone would show a mismatch.",
+                strength="measured", pairing=pairing)
+
+    def _check_battery_learned(self) -> None:
+        """The gauge's full capacity against what Android learned while charging.
+
+        Android estimates the capacity on its own, from the charge counter over
+        charges. The two agree on a healthy original cell. A gauge that keeps
+        reporting a fixed figure -- often the design capacity -- while the
+        learned one is far lower is typical of aftermarket batteries.
+        """
+        bat = self.get("battery", default={}) or {}
+        design, gauge, learned = (bat.get("design_capacity_mah"), bat.get("full_capacity_mah"),
+                                  bat.get("learned_capacity_mah"))
+        if not (design and gauge and learned) or learned == gauge == design:
+            return
+        gap = abs(gauge - learned) / design
+        if gap > 0.10:
+            self.add(
+                "warning", "components", "Battery readings disagree",
+                f"The battery's gauge reports a full capacity of {gauge:.0f} mAh, while "
+                f"Android learned {learned:.0f} mAh over its charges ({design:.0f} mAh "
+                "design). A gap this large appears when the gauge reports a fixed "
+                "figure, as many aftermarket batteries do, or after the gauge was reset."
+                + (" Here the gauge reports exactly the design capacity." if gauge == design else ""),
+                strength="measured", gauge_mah=gauge, learned_mah=learned, design_mah=design)
+        else:
+            self.add(
+                "ok", "components", "Battery capacity confirmed by Android",
+                f"Android learned {learned:.0f} mAh over its charges, in line with the "
+                f"{gauge:.0f} mAh the battery's gauge reports.",
+                strength="measured", gauge_mah=gauge, learned_mah=learned, design_mah=design)
 
     def _check_storage_wear(self) -> None:
         stor = self.get("storage", default={}) or {}
@@ -1554,6 +1786,16 @@ class AuthenticityEngine:
                 strength="proven",
                 gms_version=pkg.get("gms_version"),
             )
+        elif expects_gms and self._custom_rom_name():
+            self.add(
+                "info", "integrity", "No Google services (custom ROM)",
+                f"{self._custom_rom_name()} ships without Google services unless "
+                "they are added on purpose, so their absence is expected here. "
+                "Apps that depend on them will not run until they are installed.",
+                strength="circumstantial",
+                play_services=pkg.get("has_play_services"),
+                play_store=pkg.get("has_play_store"),
+            )
         elif expects_gms:
             self.add(
                 "warning", "integrity", "Google services absent or incomplete",
@@ -1621,6 +1863,177 @@ class AuthenticityEngine:
                 + ", ".join(sens.get("vendors", [])[:6]) + ".",
                 strength="measured", count=sens["count"],
             )
+
+    def _check_part_status(self) -> None:
+        """Parts the device itself declares original or replaced.
+
+        Android 15 and later let the display and battery drivers tell whether
+        the part fitted is the one paired with the device at the factory. It
+        is the device's own judgement: a replacement it recognises leaves no
+        doubt that the phone was opened, while "original" is only as good as
+        the driver that says it.
+        """
+        parts = (
+            ("screen", self.get("display", "screen_part_status")),
+            ("battery", self.get("battery", "part_status")),
+        )
+        for part, status in parts:
+            if status == "REPLACED":
+                self.add(
+                    "warning", "components", f"The {part} has been replaced",
+                    f"The phone's own {'display' if part == 'screen' else 'battery'} "
+                    f"driver reports that the {part} fitted is not the one it left the "
+                    "factory with, so the phone has been opened. A replacement is "
+                    "not a defect in itself, but ask who did it and with which part: "
+                    "non-original parts often perform worse"
+                    + (", and an under-display fingerprint reader needs recalibrating "
+                       "after a new screen" if part == "screen" else "")
+                    + ", and water resistance is rarely restored.",
+                    strength="measured", part=part, status=status,
+                )
+            elif status == "ORIGINAL":
+                self.add(
+                    "ok", "components", f"Original {part}, according to the phone",
+                    f"The {'display' if part == 'screen' else 'battery'} driver "
+                    f"recognises the {part} as the one fitted at the factory.",
+                    strength="measured", part=part, status=status,
+                )
+
+    # Hardware the build declares, and how to tell it is actually answering.
+    # Only checks whose runtime evidence comes from the hardware's own driver
+    # or HAL are listed: a service that merely exists proves nothing.
+    DECLARED_PARTS = (
+        ("android.hardware.sensor.accelerometer", "accelerometer", "accelerometer"),
+        ("android.hardware.sensor.gyroscope", "gyroscope", "gyroscope"),
+        ("android.hardware.sensor.compass", "magnetometer", "magnetometer"),
+        ("android.hardware.sensor.light", "light", "ambient light sensor"),
+        ("android.hardware.sensor.proximity", "proximity", "proximity sensor"),
+        ("android.hardware.sensor.barometer", "barometer", "barometer"),
+        ("android.hardware.camera", "camera_rear", "rear camera"),
+        ("android.hardware.camera.front", "camera_front", "front camera"),
+        ("android.hardware.camera.flash", "flash", "camera flash"),
+        ("android.hardware.fingerprint", "fingerprint", "fingerprint reader"),
+        ("android.hardware.touchscreen", "touch", "touchscreen"),
+        ("android.hardware.audio.output", "speaker", "loudspeaker"),
+        ("android.hardware.microphone", "mic", "microphone"),
+        ("android.hardware.telephony", "modem", "mobile modem"),
+        ("android.hardware.nfc", "nfc", "NFC controller"),
+    )
+
+    def _answering(self, part: str) -> bool | None:
+        """True if the part answers, False if it does not, None if unknown."""
+        has = self.get("sensors", "has", default={}) or {}
+        cams = self.get("cameras", default={}) or {}
+        audio = self.get("audio", default={}) or {}
+        sensor_keys = {"accelerometer": "accelerometer", "gyroscope": "gyroscope",
+                       "magnetometer": "magnetic_field", "light": "light",
+                       "proximity": "proximity", "barometer": "pressure"}
+        if part in sensor_keys:
+            return bool(has.get(sensor_keys[part])) if has else None
+        if part in ("camera_rear", "camera_front", "flash"):
+            if not cams.get("details_available"):
+                return (cams.get("count") or 0) > 0 if part == "camera_rear" and cams else None
+            return {"camera_rear": (cams.get("back_count") or 0) > 0,
+                    "camera_front": (cams.get("front_count") or 0) > 0,
+                    "flash": bool(cams.get("has_flash"))}[part]
+        if part == "fingerprint":
+            fp = self.get("biometrics", "fingerprint", default=None)
+            if not fp:
+                return None
+            # Before Android 10 the service prints no sensor list at all:
+            # a missing list there says nothing either way.
+            if fp.get("present") and not fp.get("sensors"):
+                return None
+            return bool(fp.get("present"))
+        if part == "touch":
+            inp = self.get("input", default=None)
+            return bool(inp.get("touchscreen")) if inp and inp.get("devices") else None
+        if part in ("speaker", "mic"):
+            outputs, inputs = audio.get("output_devices"), audio.get("input_devices")
+            if part == "speaker":
+                return audio.get("has_speaker") if outputs else None
+            return (audio.get("builtin_mics") or 0) > 0 if inputs else None
+        if part == "modem":
+            tel = self.get("telephony", default=None)
+            return bool((tel.get("baseband") or "").strip(" ,")) if tel else None
+        if part == "nfc":
+            nfc = self.get("connectivity", "nfc", default=None)
+            return bool(nfc.get("present")) if nfc else None
+        return None
+
+    def _check_declared_hardware(self) -> None:
+        features = {str(f).split("=", 1)[0]
+                    for f in self.get("sensors", "features", default=[]) or []}
+        if not features:
+            return
+        missing, checked = [], 0
+        for feature, part, label in self.DECLARED_PARTS:
+            if feature not in features:
+                continue
+            answer = self._answering(part)
+            if answer is None:
+                continue
+            checked += 1
+            if not answer:
+                missing.append((part, label))
+        if missing:
+            self.add(
+                "warning", "components", "Components the system expects do not answer",
+                "The firmware declares " + ", ".join(label for _, label in missing)
+                + ", which the hardware layer does not report. The part is missing, "
+                "disconnected or dead. Sensors that sit on the screen's flex cable "
+                "(proximity, ambient light) are the usual casualties of a screen "
+                "replacement, a camera or flash of a back or camera repair.",
+                strength="measured", missing=[p for p, _ in missing], checked=checked,
+            )
+        elif checked:
+            self.add(
+                "ok", "components", "Every declared component answers",
+                f"All {checked} components the firmware declares and that can be "
+                "checked from software are reported by their drivers.",
+                strength="measured", checked=checked,
+            )
+
+    def _check_usb_port(self) -> None:
+        port = self.get("components", "usb_port", default=None) or {}
+        status = (port.get("contaminant") or "").lower()
+        if status == "detected":
+            self.add(
+                "warning", "components", "Liquid or debris in the USB port",
+                "The port controller detects something conductive in the USB-C "
+                "port: moisture, corrosion or dirt. Charging may be blocked until it "
+                "is dry and clean; repeated detections point at corrosion or a past "
+                "water exposure.",
+                strength="measured", **port)
+        elif status == "not detected":
+            self.add(
+                "ok", "components", "USB port clean",
+                "The port controller checks the USB-C port for moisture and debris, "
+                "and finds none.",
+                strength="measured", **port)
+
+    def _check_fingerprint_reader(self) -> None:
+        stats = self.get("biometrics", "fingerprint", "stats", default=None) or {}
+        accepted, rejected = stats.get("accept") or 0, stats.get("reject") or 0
+        attempts = accepted + rejected
+        if attempts < 20:
+            return
+        share = round(100 * rejected / attempts)
+        if share < 15:
+            self.add(
+                "ok", "components", "Fingerprint reader recognises reliably",
+                f"{accepted} of {attempts} touches accepted since enrolment.",
+                strength="measured", **stats)
+            return
+        self.add(
+            "warning" if share >= 35 else "info", "components",
+            f"Fingerprint reader rejects {share}% of touches",
+            f"{rejected} of {attempts} touches since enrolment were rejected. Wet or "
+            "dirty fingers and a poor enrolment do this, but so does an "
+            "under-display reader beneath a replaced screen that was not "
+            "recalibrated. Enrol a finger anew and try it: if it still fails "
+            "often, suspect the screen.",
+            strength="circumstantial", **stats)
 
     def _check_components(self) -> None:
         """Signs that individual modules were replaced.
@@ -1847,20 +2260,13 @@ class AuthenticityEngine:
         return out
 
 
-# Printed on every report, the PDF included: what the report is, and what it is
-# not. The program is an aid to understanding a phone, for instance before
-# buying or selling it; it is not a certification.
+# Printed on every report, the PDF included: what the absence of findings
+# means. The terms of use, liability included, live in the application.
 DISCLAIMER = (
-    "PhoneVitals is an aid to understanding the condition of a phone, for example "
-    "before buying or selling it. Its results are indicative and are provided as "
-    "is, without warranty of any kind: they are not a certification of "
-    "authenticity, condition or value, and its authors accept no liability for "
-    "decisions taken on the basis of them or for any damage arising from its use, "
-    "including from the functional tests. This report lists the anomalies found: "
-    "their absence does not prove the device is original, only that the checks "
-    "performed found no contradictions. Whether an IMEI is reported stolen "
-    "requires national registries, which this program does not query. A physical "
-    "inspection remains irreplaceable for components the software does not expose."
+    "This report lists the anomalies found: their absence does not prove the device is "
+    "original, only that the checks performed found no contradictions. Whether an IMEI is "
+    "reported stolen requires national registries, which this program does not query. A "
+    "physical inspection remains irreplaceable for components the software does not expose."
 )
 
 
@@ -1888,9 +2294,9 @@ def assess(findings: list[dict[str, Any]]) -> tuple[int, str, str]:
         return max(0, 100 - penalty), "modified", (
             "Original hardware running modified software. The secure environment, "
             "verified up to Google's roots, confirms a genuine device; the "
-            f"{len(critical)} serious findings all follow from the unlocked "
-            "bootloader and the software installed on it, which an owner may do "
-            "legitimately. The software's own readings cannot be trusted as "
+            f"{len(critical)} serious finding{'s all follow' if len(critical) > 1 else ' follows'} "
+            "from the bootloader and the software installed on it, which an owner "
+            "may do legitimately. The software's own readings cannot be trusted as "
             "evidence."
             + (f" {len(warnings)} other findings are worth checking." if warnings else "")
         )

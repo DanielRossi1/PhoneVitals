@@ -28,7 +28,7 @@ command -v javac >/dev/null || {
 rm -rf "$BUILD"
 mkdir -p "$BUILD/classes" "$OUT"
 
-echo "→ compiling Java sources (Java 8 bytecode, which d8 accepts for API 26)"
+echo "→ compiling Java sources (Java 8 bytecode, desugared by d8 for API 24)"
 find "$SRC" -name '*.java' > "$BUILD/sources.txt"
 javac \
   -source 8 -target 8 \
@@ -40,10 +40,11 @@ javac \
   @"$BUILD/sources.txt"
 
 echo "→ converting to dex"
-# --min-api 26: covers Android 8.0 and up, the minimum on which app_process
-# with an external classpath works reliably.
+# --min-api 24: Android 7.0 and up. A dex built for 26 uses a format
+# Android 7 refuses outright, and app_process aborts before our code runs;
+# newer APIs are only reached behind version checks.
 "$D8" \
-  --min-api 26 \
+  --min-api 24 \
   --lib "$ANDROID_JAR" \
   --output "$BUILD" \
   $(find "$BUILD/classes" -name '*.class')

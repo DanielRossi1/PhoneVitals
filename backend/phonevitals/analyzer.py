@@ -18,6 +18,7 @@ from .adb import Adb, Device
 from .analysis.authenticity import AuthenticityEngine, assess
 from .analysis.imei import analyse_imeis
 from .analysis.memory import memory_findings
+from .analysis.provenance import board_date, provenance
 from .analysis.specdb import SpecDatabase
 from .collectors.agent import AgentOnPhone, battery_facts
 from .collectors.attestation import AttestationProbe
@@ -216,6 +217,10 @@ class Analyzer:
             device_model=effective.get("model", ""),
         )
 
+        spec = self.specdb.lookup(effective.get("brand", ""), effective.get("model", ""),
+                                  effective.get("device", "")) if self.specdb else None
+        snapshot["provenance"] = provenance(snapshot, spec)
+
         # -- 6. authenticity engine ----------------------------------------------
         await self._progress("verification", 90, "Running authenticity checks")
         engine = AuthenticityEngine(snapshot, specdb=self.specdb)
@@ -394,6 +399,7 @@ class Analyzer:
         res = disp.get("resolution") or {}
 
         return {
+            "board_date": board_date(s),
             "form_factor": s.get("system", {}).get("form_factor", "phone"),
             "brand": eff.get("brand", ""),
             "model": eff.get("model", ""),

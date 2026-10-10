@@ -8,6 +8,8 @@
   import Blocked from './screens/Blocked.svelte';
   import Waiting from './screens/Waiting.svelte';
   import Authenticity from './views/Authenticity.svelte';
+  import Hardware from './views/Hardware.svelte';
+  import TermsDialog from './components/TermsDialog.svelte';
   import Health from './views/Health.svelte';
   import Live from './views/Live.svelte';
   import Overview from './views/Overview.svelte';
@@ -19,7 +21,7 @@
   import { PAGES } from './lib/pages.js';
 
   const VIEWS = {
-    overview: Overview, authenticity: Authenticity, health: Health, tests: Tests,
+    overview: Overview, authenticity: Authenticity, health: Health, hardware: Hardware, tests: Tests,
     live: Live, specs: Specs, raw: Raw,
   };
 
@@ -105,6 +107,7 @@
 {/if}
 
 <TestDialog />
+<TermsDialog />
 <Toasts />
 {/if}
 

@@ -20,8 +20,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .base import (
-    Collector, is_temperature_zone, parse_colon_kv, parse_kv, sysfs_dump, to_float,
-    to_int,
+    Collector, current_hal_temperatures, is_hal_temperature, is_temperature_zone,
+    parse_colon_kv, parse_kv, sysfs_dump, to_float, to_int,
 )
 
 
@@ -81,6 +81,7 @@ class BatteryCollector(Collector):
             "first_usage_date": self._date(merged.get("first_usage_date")),
             "part_number": merged.get("part_number"),
             "serial_number": merged.get("serial_number"),
+            "pairing": self._pairing(merged.get("pairing_state")),
             "supplies": [s for s in raw.get("bat.supplies", "").split() if s],
             "charger": self._charger(parse_kv(raw.get("bat.usb", ""))),
             "wireless_present": bool(parse_kv(raw.get("bat.wireless", ""))),
@@ -88,6 +89,16 @@ class BatteryCollector(Collector):
         }
 
     # ------------------------------------------------------------------ utils
+
+    # Pixel battery pairing (google_battery driver): the phone writes a hash
+    # of its serial and the pack's factory data into the pack. A blank pack
+    # is paired on first use; one carrying another phone's hash is a mismatch.
+    PAIRING = {"1": "paired", "-2": "mismatch", "0": "pending", "-1": "disabled",
+               "2": "reset", "-3": "read error", "-4": "write error"}
+
+    @classmethod
+    def _pairing(cls, value: str | None) -> str | None:
+        return cls.PAIRING.get((value or "").strip()) if value else None
 
     @staticmethod
     def _learned(text: str) -> dict[str, float]:
@@ -113,7 +124,17 @@ class BatteryCollector(Collector):
         nothing: it is exactly what a worn cell would want to hide behind.
         """
         if design and full and full != design:
-            return round(full / design * 100, 1), "charge_full / charge_full_design", None
+            # Above design with almost no cycles the gauge has not learned the
+            # cell yet: a new battery or a reset gauge reports its profile
+            # value, which says nothing about wear.
+            if full > design * 1.02 and (cycles or 0) < 10:
+                return None, None, (
+                    f"The gauge reports {full / design * 100:.0f}% of the design capacity "
+                    f"after {cycles or 0} cycles: it has not learned this battery yet, as "
+                    "after a battery replacement or a gauge reset. Wear becomes "
+                    "measurable after a few full charges.")
+            return (round(min(100.0, full / design * 100), 1),
+                    "charge_full / charge_full_design", None)
 
         # A learned full-charge capacity never equals the design figure to the
         # microamp-hour: when the two match, the driver is simply echoing the
@@ -377,11 +398,11 @@ class ThermalCollector(Collector):
         seen: set[str] = set()
         for m in re.finditer(
             r"Temperature\{mValue=(-?[\d.]+),\s*mType=(-?\d+),\s*mName=([^,}]+)",
-            svc,
+            current_hal_temperatures(svc),
         ):
             name = m.group(3).strip()
             value = to_float(m.group(1))
-            if value is None or name in seen:
+            if value is None or name in seen or not is_hal_temperature(name, value):
                 continue
             seen.add(name)
             zones.append({
@@ -406,6 +427,8 @@ def merge_agent_facts(bat: dict[str, Any], facts: dict[str, Any]) -> None:
     bat["framework_facts"] = facts
     if bat.get("cycle_count") is None and facts.get("cycle_count") is not None:
         bat["cycle_count"] = facts["cycle_count"]
+    if facts.get("part_status"):
+        bat["part_status"] = facts["part_status"]
     for key in ("manufacturing_date", "first_usage_date"):
         if not bat.get(key) and facts.get(key):
             bat[key] = {"iso": facts[key], "raw": facts[key], "format": "BatteryManager"}

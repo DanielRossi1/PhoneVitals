@@ -150,6 +150,21 @@ class ComponentsCollector(Collector):
                 "/sys/class/udc/*/state",
             ]),
 
+            # USB-C port as the port controller reports it. Pixels and some
+            # others detect liquid or debris in the port and say so here.
+            "comp.usb_port": "dumpsys usb 2>/dev/null | grep -m6 -E "
+                             "'contaminant_presence_status|current_mode|current_power_role'",
+            # Drivers loaded, which name the chips they drive (touch, Wi-Fi,
+            # haptics...). One system image often carries the drivers of a
+            # whole device family, so a name here is not proof of the part.
+            "comp.modules": "cut -d' ' -f1 /proc/modules 2>/dev/null | sort | head -400",
+            # Privacy switches for microphone (sensor 1) and camera (sensor 2):
+            # with one on, the hardware works but every app gets silence or a
+            # black frame, our tests included.
+            "comp.privacy": "dumpsys sensor_privacy 2>/dev/null | grep -E 'sensor=|state_type='",
+            # GPU as the graphics driver names it.
+            "comp.gpu": "dumpsys SurfaceFlinger 2>/dev/null | grep -m1 'GLES:'",
+
             # -- sensor inventory according to the kernel ------------------------
             # The framework list comes through the HAL; this comes from the
             # drivers. A sensor declared by the HAL but absent here is simulated.
@@ -160,6 +175,37 @@ class ComponentsCollector(Collector):
                 "-e 's|:|=|'"
             ),
         }
+
+    @staticmethod
+    def _usb_port(text: str) -> dict[str, str] | None:
+        out = {}
+        for key in ("contaminant_presence_status", "current_mode", "current_power_role"):
+            m = re.search(rf"{key}=([^\n]+)", text)
+            if m:
+                out[key.replace("_presence_status", "")] = m.group(1).strip()
+        return out or None
+
+    @staticmethod
+    def _privacy(text: str) -> dict[str, bool] | None:
+        """SensorPrivacyManager: state_type 1 means the switch blocks the sensor."""
+        names = {"1": "microphone_blocked", "2": "camera_blocked"}
+        out: dict[str, bool] = {}
+        sensor = None
+        for line in text.splitlines():
+            m = re.search(r"sensor=(\d+)", line)
+            if m:
+                sensor = m.group(1)
+                continue
+            m = re.search(r"state_type=(\d+)", line)
+            if m and sensor in names:
+                out[names[sensor]] = out.get(names[sensor], False) or m.group(1) == "1"
+        return out or None
+
+    @staticmethod
+    def _gpu(text: str) -> str | None:
+        """`GLES: ARM, Mali-G715, OpenGL ES 3.2 v1.r54p3-...` -> vendor, model, API."""
+        m = re.search(r"GLES:\s*([^,\n]+),\s*([^,\n]+)(?:,\s*(OpenGL ES [\d.]+))?", text)
+        return ", ".join(p for p in m.groups() if p) if m else None
 
     def parse(self, raw: dict[str, str]) -> dict[str, Any]:
         camera = parse_kv(raw.get("comp.camera", ""))
@@ -185,6 +231,10 @@ class ComponentsCollector(Collector):
             "soc": self._describe_soc(soc0),
             "storage_chip": self._describe_mmc(mmc),
             "usb_link": self._describe_usb(usb),
+            "usb_port": self._usb_port(raw.get("comp.usb_port", "")),
+            "kernel_modules": [m for m in raw.get("comp.modules", "").split() if m],
+            "gpu": self._gpu(raw.get("comp.gpu", "")),
+            "privacy": self._privacy(raw.get("comp.privacy", "")),
             "kernel_sensor_nodes": sensor_nodes,
             "sources_available": sum(
                 1 for d in (camera, touch, panel, finger, soc0, mmc, usb) if d),

@@ -199,6 +199,8 @@ class StorageCollector(Collector):
             # sold as new.
             "stor.ufs_health": self._descriptor_probe("health_descriptor"),
             "stor.ufs_string": self._descriptor_probe("string_descriptors"),
+            # wManufactureDate of the UFS chip, soldered to the mainboard.
+            "stor.ufs_device": self._descriptor_probe("device_descriptor"),
             "stor.ufs_present": (
                 'ls -d /sys/devices/platform/*ufs* /sys/devices/platform/*/*ufshc '
                 '/sys/devices/platform/soc/*ufshc /sys/class/scsi_device/0:0:0:0 '
@@ -306,6 +308,8 @@ class StorageCollector(Collector):
             "disks": proc_disks,
             "ufs_health": self._decode_ufs_health(health, unreadable, directory_found),
             "ufs_strings": self._descriptor_values(raw.get("stor.ufs_string", "")),
+            "chip_date": (self._ufs_date(self._descriptor_values(raw.get("stor.ufs_device", "")))
+                          or self._mmc_date(mmc.get("date"))),
             "emmc": self._decode_mmc(mmc),
             "physical_bytes": physical_bytes,
             "nominal_gb": nominal,
@@ -316,6 +320,20 @@ class StorageCollector(Collector):
             "data_available_bytes": data_avail,
             "partitions_raw": raw.get("stor.partitions", ""),
         }
+
+    @staticmethod
+    def _ufs_date(desc: dict[str, str]) -> str | None:
+        """`manufacturing_date` 0xYYMM in BCD (0x2108 = August 2021) -> 2021-08."""
+        m = re.fullmatch(r"(?:0x)?(\d{2})(\d{2})", (desc.get("manufacturing_date") or "").strip())
+        if not m or not 1 <= int(m.group(2)) <= 12:
+            return None
+        return f"20{m.group(1)}-{m.group(2)}"
+
+    @staticmethod
+    def _mmc_date(value: str | None) -> str | None:
+        """eMMC CID date `MM/YYYY` -> YYYY-MM."""
+        m = re.fullmatch(r"(\d{1,2})/(\d{4})", (value or "").strip())
+        return f"{m.group(2)}-{int(m.group(1)):02d}" if m and 1 <= int(m.group(1)) <= 12 else None
 
     @staticmethod
     def _descriptor_values(text: str) -> dict[str, str]:
@@ -522,7 +540,15 @@ class DisplayCollector(Collector):
             "drm_connectors": parse_kv(raw.get("disp.drm", "")),
             "hdr_types": self._hdr(dump),
             "display_ids": raw.get("disp.surface", "").strip(),
+            "screen_part_status": self._part_status(raw.get("disp.surface", "")),
         }
+
+    @staticmethod
+    def _part_status(text: str) -> str | None:
+        """What the display HAL says of the built-in panel (Android 16+):
+        ORIGINAL, REPLACED, or UNSUPPORTED when it cannot tell."""
+        m = re.search(r"screenPartStatus=([A-Z_]+)", text)
+        return m.group(1) if m else None
 
     @staticmethod
     def _parse_wm(text: str) -> dict[str, str]:

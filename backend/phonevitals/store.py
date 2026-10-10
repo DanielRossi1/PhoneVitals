@@ -90,6 +90,13 @@ def traits(s: dict[str, Any]) -> dict[str, Any]:
         "ram_gb": (s.get("memory") or {}).get("nominal_gb"),
         "panel_type": ((s.get("components") or {}).get("panel") or {}).get("lcd_type"),
         "touch_controller": ((s.get("input") or {}).get("touchscreen") or {}).get("name"),
+        "touch_controller_id": ((s.get("input") or {}).get("touchscreen") or {}).get("hardware_id"),
+        "panel_name": (disp.get("product_info") or {}).get("name"),
+        "panel_driver": ((s.get("system") or {}).get("props") or {}).get("ro.boot.primary_panel_drv"),
+        "hdr_types": sorted(disp.get("hdr_types") or []) or None,
+        "fingerprint_sensor": " ".join(filter(None, (
+            ((s.get("components") or {}).get("fingerprint") or {}).get(k)
+            for k in ("vendor", "name")))) or None,
     }
 
 
@@ -100,7 +107,11 @@ STRICT_TRAITS = {"soc": "processor", "platform": "platform", "core_layout": "cor
                  "camera_arrays": "camera sensor resolutions", "camera_count": "camera count"}
 LOOSE_TRAITS = {"camera_sensors": "camera sensor parts", "sensor_chips": "sensor chips",
                 "storage_type": "storage type", "ram_gb": "RAM", "panel_type": "panel type",
-                "touch_controller": "touch controller", "max_refresh_hz": "refresh rate"}
+                "touch_controller": "touch controller", "touch_controller_id": "touch controller ID",
+                "max_refresh_hz": "refresh rate",
+                "panel_name": "display panel part", "panel_driver": "display panel driver and ID",
+                "hdr_types": "display HDR formats",
+                "fingerprint_sensor": "fingerprint sensor"}
 
 
 def model_key(s: dict[str, Any]) -> str:

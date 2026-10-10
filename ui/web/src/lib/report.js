@@ -31,7 +31,7 @@ export const CATEGORIES = {
 const PAGE_OF = {
   identity: 'authenticity',
   integrity: 'authenticity',
-  components: 'health',
+  components: 'hardware',
   specifications: 'health',
   history: 'health',
 };
@@ -85,3 +85,35 @@ export function verdict(snapshot) {
     disclaimer: r.disclaimer || '',
   };
 }
+
+/** How sure a finding is, in words a reader can weigh. */
+export const STRENGTHS = {
+  proven: { label: 'Certain', hint: 'Read straight from the hardware or signed by it: it cannot be faked by software.' },
+  measured: { label: 'Measured', hint: 'Read or measured on the device: reliable, unless the software itself was altered.' },
+  circumstantial: { label: 'Indication', hint: 'A clue that fits the explanation given, not proof of it.' },
+};
+
+const SMALL_WORDS = /^(id|sku|usb|imei|tac|soc|cpu|gpu|ram|ufs|nfc|hdr|ok|uid|tee)$/i;
+
+/** A finding's evidence as label/value rows instead of raw JSON. */
+export function evidenceRows(evidence) {
+  if (!evidence || typeof evidence !== 'object') return [];
+  const label = (key) => key.replace(/_/g, ' ').replace(/\b\w+/g,
+    (w, i) => (SMALL_WORDS.test(w) ? w.toUpperCase() : i === 0 ? w[0].toUpperCase() + w.slice(1) : w));
+  const value = (v) => {
+    if (v === true) return 'yes';
+    if (v === false) return 'no';
+    if (v === null || v === undefined || v === '') return '—';
+    if (Array.isArray(v)) {
+      const items = v.map((x) => (x && typeof x === 'object' ? Object.values(x).filter((y) => y !== null && y !== '').join(' ') : String(x)));
+      return items.length > 8 ? `${items.slice(0, 8).join(', ')} and ${items.length - 8} more` : items.join(', ') || '—';
+    }
+    if (typeof v === 'object') {
+      return Object.entries(v).filter(([, x]) => x !== null && x !== '')
+        .map(([k, x]) => `${k.replace(/_/g, ' ')}: ${typeof x === 'object' ? JSON.stringify(x) : x}`).join(' · ');
+    }
+    return String(v);
+  };
+  return Object.entries(evidence).map(([k, v]) => [label(k), value(v)]);
+}
+
