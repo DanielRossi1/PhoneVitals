@@ -72,6 +72,8 @@ jobs:
           fetch-depth: 0          # tags, for the snap version
       - uses: snapcore/action-build@v1
         id: build
+      - name: Store review
+        run: ./scripts/review_snap.sh "${{ steps.build.outputs.snap }}"
       - uses: actions/upload-artifact@v7
         with:
           name: phonevitals-snap

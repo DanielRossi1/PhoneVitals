@@ -53,6 +53,7 @@ apps:
     extensions: [gnome]
     plugs:
       - adb-support
+      - audio-playback
       - audio-record
       - browser-support
       - home

@@ -32,6 +32,8 @@ jobs:
         run: ./scripts/update_attestation_data.sh
       - uses: snapcore/action-build@v1
         id: build
+      - name: Store review
+        run: ./scripts/review_snap.sh "${{ steps.build.outputs.snap }}"
       - uses: snapcore/action-publish@v1
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
