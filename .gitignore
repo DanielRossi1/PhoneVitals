@@ -6,7 +6,7 @@ CLAUDE.local.md
 /README.md
 
 # Local toolchain and dependencies
-/.toolchain/
+/.toolchain
 /.toolchain-setup.log
 node_modules/
 .venv/

@@ -131,3 +131,16 @@ def human_hz(khz: int | float | None) -> str:
     if mhz >= 1000:
         return f"{mhz / 1000:.2f} GHz"
     return f"{mhz:.0f} MHz"
+
+
+# Thermal zones that do not hold a temperature: Qualcomm's limits-management
+# zones (lmh-dcvs-*) report their fixed trip point, and the battery
+# current-limit zones (bcl, ibat, vbat, soc, socd) report current, voltage or
+# charge.
+_NOT_A_TEMPERATURE = re.compile(
+    r"^(lmh-|bcl|socd?$)|(ibat|vbat|bcl)|-lvl\d", re.IGNORECASE)
+
+
+def is_temperature_zone(zone_type: str) -> bool:
+    return not _NOT_A_TEMPERATURE.search(zone_type or "")
+

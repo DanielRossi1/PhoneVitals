@@ -31,6 +31,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .adb import Adb, reap
+from .collectors.base import is_temperature_zone
 
 log = logging.getLogger(__name__)
 
@@ -442,6 +443,73 @@ class TouchMonitor:
         self._slot = 0
 
 
+class PenMonitor(TouchMonitor):
+    """Live stylus state read from getevent.
+
+    Pen digitizers use the single-touch protocol: ABS_X, ABS_Y and
+    ABS_PRESSURE for the tip, ABS_DISTANCE while hovering, BTN_TOOL_PEN while
+    the pen is in range, BTN_TOUCH on contact and BTN_STYLUS for the side
+    button. One packet per SYN_REPORT.
+    """
+
+    def __init__(self, adb: Adb, serial: str, device_path: str,
+                 on_event: Callable, max_x: int = 0, max_y: int = 0,
+                 max_pressure: int = 0):
+        super().__init__(adb, serial, device_path, on_event, max_x, max_y)
+        self.max_pressure = max_pressure
+        self._pen: dict[str, Any] = {}
+
+    async def _handle(self, line: str) -> None:
+        m = self.LINE.match(line)
+        if not m:
+            return
+        _ts, _dev, etype, code, value = m.groups()
+        pen = self._pen
+
+        if etype == "EV_SYN" and code == "SYN_REPORT":
+            await self._emit({
+                "type": "pen",
+                "x": pen.get("x"), "y": pen.get("y"),
+                "pressure": pen.get("pressure", 0),
+                "in_range": pen.get("in_range", False),
+                "contact": pen.get("contact", False),
+                "button": pen.get("button", False),
+                "eraser": pen.get("eraser", False),
+                "max_x": self.max_x, "max_y": self.max_y,
+                "max_pressure": self.max_pressure,
+            })
+            return
+
+        if etype == "EV_KEY":
+            down = value.upper() in ("DOWN", "00000001", "1")
+            if code == "BTN_TOOL_PEN":
+                pen["in_range"] = down
+            elif code == "BTN_TOOL_RUBBER":
+                pen["in_range"] = pen["eraser"] = down
+            elif code == "BTN_TOUCH":
+                pen["contact"] = down
+            elif code in ("BTN_STYLUS", "BTN_STYLUS2"):
+                pen["button"] = down
+            return
+
+        if etype != "EV_ABS":
+            return
+        try:
+            v = int(value, 16)
+        except ValueError:
+            return
+        if code in ("ABS_X", "ABS_MT_POSITION_X"):
+            pen["x"] = v
+        elif code in ("ABS_Y", "ABS_MT_POSITION_Y"):
+            pen["y"] = v
+        elif code in ("ABS_PRESSURE", "ABS_MT_PRESSURE"):
+            pen["pressure"] = v
+
+    async def stop(self) -> None:
+        await super().stop()
+        self._pen = {}
+
+
 class PollingMonitor:
     """Samples at intervals the values that have no push stream."""
 
@@ -552,7 +620,7 @@ class PollingMonitor:
                 by_zone.setdefault(zone, {})[attr] = value.strip()
         for attrs in by_zone.values():
             name, value = attrs.get("type"), attrs.get("temp")
-            if not name or value is None:
+            if not name or value is None or not is_temperature_zone(name):
                 continue
             try:
                 v = float(value)

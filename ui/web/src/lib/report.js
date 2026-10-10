@@ -15,6 +15,7 @@ export const VERDICTS = {
   no_anomalies: { label: 'No anomalies', tone: 'ok' },
   caution: { label: 'Caution', tone: 'warn' },
   suspicious: { label: 'Suspicious', tone: 'warn' },
+  modified: { label: 'Modified', tone: 'warn' },
   compromised: { label: 'Compromised', tone: 'crit' },
 };
 

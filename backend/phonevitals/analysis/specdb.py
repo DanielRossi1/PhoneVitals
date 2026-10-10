@@ -177,14 +177,17 @@ class SpecDatabase:
         expected_storage = spec.get("storage_gb") or []
         actual_storage = measured("storage", "nominal_gb")
         estimated = bool(measured("storage", "nominal_estimated", default=False))
+        source = measured("storage", "nominal_source", default="")
         if expected_storage and actual_storage:
-            basis = (
-                "inferred from the size of the /data filesystem, because the "
-                "block device is not readable by the shell user"
-                if estimated else
-                "read from the number of sectors the memory chip declares, not "
-                "from system properties"
-            )
+            if estimated:
+                basis = ("inferred from the size of the /data filesystem, because "
+                         "the block device is not readable by the shell user")
+            elif source == "storage_manager":
+                basis = ("reported by Android's storage service, which reads the "
+                         "memory chip's sector count with system privileges")
+            else:
+                basis = ("read from the number of sectors the memory chip "
+                         "declares, not from system properties")
             if actual_storage not in expected_storage:
                 issues.append({
                     "severity": "info" if estimated else "warning",
@@ -327,6 +330,53 @@ class SpecDatabase:
                         f"compatible with the {spec.get('soc')} expected for a {name}."
                     ),
                     "evidence": {"declared": declared_soc, "platform": platform},
+                })
+
+        # -- mobile radio ------------------------------------------------------
+        # Tablets come in Wi-Fi-only and cellular versions with different part
+        # numbers. A board from one version inside the other's identity is a
+        # relabelled device.
+        wifi_only = [m.lower() for m in spec.get("wifi_only_models") or []]
+        model = str(measured("system", "partitions", "effective", "model", default="") or "")
+        features = {str(f).split("=", 1)[0]
+                    for f in measured("sensors", "features", default=[]) or []}
+        if wifi_only and model and features:
+            has_radio = "android.hardware.telephony" in features
+            is_wifi_only = any(model.lower().startswith(m) for m in wifi_only)
+            if is_wifi_only and has_radio:
+                issues.append({
+                    "severity": "warning",
+                    "title": "Mobile radio on a Wi-Fi-only model",
+                    "detail": (
+                        f"{model} is the Wi-Fi-only version of the {name}, yet the "
+                        "device declares a mobile radio. Either the board comes "
+                        "from the cellular version and the model was changed in "
+                        "software, or the identity was rewritten."
+                    ),
+                    "evidence": {"model": model, "telephony": True},
+                })
+            elif not is_wifi_only and not has_radio:
+                issues.append({
+                    "severity": "warning",
+                    "title": "No mobile radio on a cellular model",
+                    "detail": (
+                        f"{model} is the cellular version of the {name}, yet the "
+                        "device declares no mobile radio. Either the board comes "
+                        "from the Wi-Fi-only version, or the radio is missing or "
+                        "disabled."
+                    ),
+                    "evidence": {"model": model, "telephony": False},
+                })
+            else:
+                issues.append({
+                    "severity": "ok",
+                    "title": "Mobile radio as expected for the model",
+                    "detail": (
+                        f"{model} is the {'Wi-Fi-only' if is_wifi_only else 'cellular'} "
+                        f"version of the {name}, and the device "
+                        f"{'has no' if is_wifi_only else 'declares a'} mobile radio."
+                    ),
+                    "evidence": {"model": model, "telephony": has_radio},
                 })
 
         return issues

@@ -31,6 +31,7 @@ function emptyLive() {
     tempMax: null,
     cpu: [],
     fingers: 0,
+    pen: null,
     gnss: { sats: [], used: 0, seen: false, summary: '', hint: '' },
   };
 }
@@ -253,6 +254,12 @@ function handle(msg) {
       return;
 
     case 'sensor': return onSensor(msg);
+
+    case 'pen':
+      live.pen.update(msg);
+      app.live.pen = { ...live.pen.stats, inRange: Boolean(msg.in_range),
+                       pressure: num(msg.pressure) ?? 0, maxPressure: num(msg.max_pressure) ?? 0 };
+      return;
 
     case 'touch':
       live.touch.update(msg);
@@ -545,14 +552,17 @@ export function startTest(id) {
   if (meta.kind === 'automatic') return;
   app.keysPressed = [];
   if (id === 'touch' || id === 'multitouch') live.touch.resetCoverage();
+  if (id === 'pen') { live.pen.clear(); app.live.pen = null; }
   app.dialog = id;
 }
 
 /** Run every available automatic test, one after another: they share the
  * sensors and the vibration motor, so running them together would spoil the
- * measurements. */
+ * measurements. Long ones (half an hour of battery measurement) run only on
+ * request. */
 export function runAutomaticTests() {
-  const ids = app.tests.filter((t) => t.kind === 'automatic' && t.available).map((t) => t.id);
+  const ids = app.tests.filter((t) => t.kind === 'automatic' && t.available && !t.long)
+    .map((t) => t.id);
   if (!ids.length || app.autoQueue.length) return;
   app.autoQueue = ids;
   if (!runTest(ids[0])) app.autoQueue = [];

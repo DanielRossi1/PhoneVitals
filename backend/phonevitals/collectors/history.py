@@ -107,13 +107,20 @@ class HistoryCollector(Collector):
                                f" | grep -oiE '{_LOG_PATTERN}' | tr 'A-Z' 'a-z'"
                                " | sort | uniq -c | head -20",
             "hist.user_files": "for d in " + " ".join(USER_DIRS) + "; do"
-                               " echo \"$d $(find /sdcard/$d -type f 2>/dev/null | wc -l)\"; done",
+                               " echo \"$d $(find /sdcard/$d -type f -not -path '*/PhoneVitals/*'"
+                               " 2>/dev/null | wc -l)\"; done",
             # The account name is cut away on the phone: only types and counts
             # come back.
             "hist.accounts": "dumpsys account 2>/dev/null"
                              " | grep -oE 'Account \\{name=[^,]*, type=[A-Za-z0-9._-]+\\}'"
                              " | sort -u | sed 's/.*type=//; s/}$//' | sort | uniq -c;"
                              " echo accounts-read",
+            # Users and profiles. The user's name is cut away on the phone:
+            # only id, flags and type come back.
+            "hist.users": "dumpsys user 2>/dev/null"
+                          " | grep -E '^  UserInfo\\{|^    Type: android'"
+                          " | sed -E 's/UserInfo\\{([0-9]+):.*:([0-9a-fA-F]+)\\}.*/UserInfo{\\1:\\2}/';"
+                          " echo users-read",
         }
 
     def parse(self, raw: dict[str, str]) -> dict[str, Any]:
@@ -127,6 +134,7 @@ class HistoryCollector(Collector):
             "crashes": self._crashes(raw.get("hist.dropbox", "")),
             "accounts": self._accounts(raw.get("hist.accounts", "")),
             "control": self._control(raw.get("hist.owners", ""), props),
+            "users": self._users(raw.get("hist.users", "")),
             "region": {k: v for k, v in {
                 "sales_code": props.get("ro.csc.sales_code") or props.get("ro.boot.sales_code"),
                 "carrier_id": props.get("ro.boot.carrierid"),
@@ -203,8 +211,12 @@ class HistoryCollector(Collector):
             # A clock not yet set at first boot stamps 1970 or 2009, and some
             # builds stamp their system apps with one placeholder instant (seen:
             # 200 packages at 2021-01-01, same second, on a phone set up in
-            # 2026). Neither is a day the phone was used.
-            if day < "2012-01-01" or (count >= 20 and distinct == 1):
+            # 2026). Neither is a day the phone was used. Devices whose clock
+            # resets to New Year (seen: 244 packages at 2020-01-01 within three
+            # seconds, on a tablet made in late 2020) do the same with a few
+            # seconds' spread.
+            if (day < "2012-01-01" or (count >= 20 and distinct == 1)
+                    or (day.endswith("-01-01") and count >= 20 and distinct <= 10)):
                 continue
             days.append((day, count))
         if not days:
@@ -260,6 +272,37 @@ class HistoryCollector(Collector):
             "labels": {tag: CRASH_TAGS[tag] for tag in counts},
             "since": min(days) if days else None,
             "available": bool(days),
+        }
+
+    # UserInfo.FLAG_MAIN: the user a person set the device up with. On a
+    # headless system user (some tablets) it is not user 0.
+    FLAG_MAIN = 0x4000
+
+    @classmethod
+    def _users(cls, text: str) -> dict[str, Any]:
+        users: list[dict[str, Any]] = []
+        for line in text.splitlines():
+            m = re.match(r"\s*UserInfo\{(\d+):([0-9a-fA-F]+)\}", line)
+            if m:
+                users.append({"id": int(m.group(1)), "flags": int(m.group(2), 16), "type": ""})
+                continue
+            m = re.match(r"\s*Type: android\.os\.usertype\.(\S+)", line)
+            if m and users and not users[-1]["type"]:
+                users[-1]["type"] = m.group(1)
+        people = [u for u in users if u["type"].startswith("full.")
+                  and u["type"] != "full.GUEST"]
+        main = next((u for u in people if u["flags"] & cls.FLAG_MAIN), None) \
+            or (people[0] if people else None)
+        types = [u["type"] for u in users]
+        return {
+            "read": "users-read" in text and bool(users),
+            "count": len(users),
+            "secondary": sum(1 for u in people if u is not main),
+            "guest": "full.GUEST" in types,
+            "work_profile": "profile.MANAGED" in types,
+            "private_space": "profile.PRIVATE" in types,
+            "clone_profile": "profile.CLONE" in types,
+            "types": types,
         }
 
     @staticmethod

@@ -20,7 +20,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .base import (
-    Collector, parse_colon_kv, parse_kv, sysfs_dump, to_float, to_int,
+    Collector, is_temperature_zone, parse_colon_kv, parse_kv, sysfs_dump, to_float,
+    to_int,
 )
 
 
@@ -329,7 +330,7 @@ class ThermalCollector(Collector):
         zones = []
         for zone, attrs in by_zone.items():
             temp = to_float(attrs.get("temp"))
-            if temp is None or not attrs.get("type"):
+            if temp is None or not is_temperature_zone(attrs.get("type", "")):
                 continue
             # Kernels expose thousandths of a degree; a few use degrees.
             celsius = temp / 1000 if abs(temp) > 200 else temp

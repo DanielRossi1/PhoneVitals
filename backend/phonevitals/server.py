@@ -36,7 +36,7 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__
 from .adb import Adb, AdbError, Device, DeviceWatcher
 from .analyzer import Analyzer
-from .live import AgentSession, PollingMonitor, TouchMonitor
+from .live import AgentSession, PenMonitor, PollingMonitor, TouchMonitor
 from .testsuite import TestSuite
 
 log = logging.getLogger("phonevitals")
@@ -92,6 +92,7 @@ class Session:
         self.agent: AgentSession | None = None
         self.gnss: AgentSession | None = None
         self.touch: TouchMonitor | None = None
+        self.pen: PenMonitor | None = None
         self.poller: PollingMonitor | None = None
         self.suite: TestSuite | None = None
 
@@ -267,6 +268,16 @@ class Session:
                 )
                 await self.touch.start()
 
+            stylus = (self.snapshot.get("input") or {}).get("stylus")
+            if stylus and stylus.get("path"):
+                self.pen = PenMonitor(
+                    self.adb, serial, stylus["path"], self._sink,
+                    max_x=stylus.get("pen_max_x") or 0,
+                    max_y=stylus.get("pen_max_y") or 0,
+                    max_pressure=stylus.get("pen_max_pressure") or 0,
+                )
+                await self.pen.start()
+
             self.poller = PollingMonitor(self.adb, serial, self._sink, interval=1.0)
             await self.poller.start()
 
@@ -278,7 +289,7 @@ class Session:
             self._live_running = False
             if self.demo_live:
                 await self.demo_live.stop()
-            for monitor in (self.poller, self.touch):
+            for monitor in (self.poller, self.touch, self.pen):
                 if monitor:
                     try:
                         await monitor.stop()
@@ -292,7 +303,7 @@ class Session:
                         await agent.stop(cleanup=cleanup)
                     except Exception:
                         log.exception("failed to stop agent")
-            self.poller = self.touch = self.agent = self.gnss = None
+            self.poller = self.touch = self.pen = self.agent = self.gnss = None
             if was_running:
                 await self.broadcast({"type": "live_stopped"})
 

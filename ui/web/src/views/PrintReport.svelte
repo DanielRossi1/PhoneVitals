@@ -47,6 +47,7 @@
   const att = $derived(r?.attestation ?? {});
   const facts = $derived([
     ['Model', `${cap(s.brand)} ${s.model ?? ''}`.trim()],
+    ['Type', s.form_factor && s.form_factor !== 'phone' ? cap(s.form_factor) : null],
     ['Codename', s.device],
     ['Serial number', s.serial],
     ['IMEI', (s.imeis ?? []).join(', ') || 'not read'],

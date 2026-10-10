@@ -76,6 +76,7 @@
 
   const device = $derived([
     ['Model', `${cap(s.brand)} ${s.model ?? ''}`.trim()],
+    ['Type', s.form_factor && s.form_factor !== 'phone' ? cap(s.form_factor) : null],
     ['Codename', s.device],
     ['Android', present(s.android) ? `${s.android} (API ${s.sdk ?? '?'})` : null],
     ['Processor', [s.soc, s.cores && `${s.cores} cores`].filter(Boolean).join(' · ')],

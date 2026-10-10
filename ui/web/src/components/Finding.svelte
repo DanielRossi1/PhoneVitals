@@ -19,6 +19,9 @@
       {#if finding.strength_label}
         <span class="strength strength-{finding.strength}">{finding.strength_label}</span>
       {/if}
+      {#if finding.modification}
+        <span class="strength" title="Follows from software the owner installed, not from tampering">Modification</span>
+      {/if}
     </header>
     <p>{finding.detail}</p>
     {#if hasEvidence}

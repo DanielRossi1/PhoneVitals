@@ -167,6 +167,7 @@ class CameraCollector(Collector):
             "back_count": sum(1 for c in cameras if c.get("facing") == "rear"),
             "front_count": sum(1 for c in cameras if c.get("facing") == "front"),
             "details_available": bool(cameras and cameras[0].get("pixel_array")),
+            "has_flash": any(c.get("has_flash") for c in cameras),
             "hal_version": self._hal(dump),
         }
 
@@ -200,6 +201,17 @@ class CameraCollector(Collector):
         for i in range(1, len(blocks) - 1, 2):
             cam_id, body = blocks[i], blocks[i + 1]
             cameras.append(cls._parse_one(cam_id, body))
+        if cameras:
+            return cameras
+        # Newer camera services print one section per HAL device instead:
+        #   == Camera HAL device device@3.4/internal/0 (v3.4) static information: ==
+        seen: set[str] = set()
+        sections = re.split(r"^== (.*?) ==\s*$", dump, flags=re.M)
+        for title, body in zip(sections[1::2], sections[2::2]):
+            m = re.match(r"Camera HAL device \S+/(\S+) \(.*\) static information", title)
+            if m and m.group(1) not in seen:
+                seen.add(m.group(1))
+                cameras.append(cls._parse_one(m.group(1), body))
         return cameras
 
     @staticmethod
@@ -266,7 +278,10 @@ class CameraCollector(Collector):
             ),
             "focal_lengths_mm": focals[:6],
             "apertures": apertures[:6],
-            "hardware_level": level.split()[0] if level else "",
+            # Printed by name on some builds and as the enum value on others.
+            "hardware_level": {"0": "LIMITED", "1": "FULL", "2": "LEGACY", "3": "LEVEL_3",
+                               "4": "EXTERNAL"}.get(level.split()[0], level.split()[0])
+                              if level else "",
             "has_flash": bool(re.match(r"(?:true|1)\b", flash, re.I)),
         }
 
@@ -290,6 +305,7 @@ class InputCollector(Collector):
             "devices": devices,
             "count": len(devices),
             "touchscreen": touchscreen,
+            "stylus": next((d for d in devices if d["is_stylus"]), None),
             "key_devices": [d for d in devices if d["is_keys"]],
         }
 
@@ -352,7 +368,13 @@ class InputCollector(Collector):
         out = []
         for d in devices:
             abs_keys = d["abs"]
-            is_touch = any(k.startswith("ABS_MT_POSITION") for k in abs_keys)
+            keys = set(d["keys"])
+            # A pen digitizer (S Pen, Wacom, USI) announces the pen tool and
+            # usually reports single-touch ABS_X/ABS_Y with pressure.
+            is_stylus = bool({"BTN_TOOL_PEN", "BTN_STYLUS"} & keys) and (
+                "ABS_X" in abs_keys or "ABS_MT_POSITION_X" in abs_keys)
+            is_touch = (any(k.startswith("ABS_MT_POSITION") for k in abs_keys)
+                        and "BTN_TOOL_PEN" not in keys)
             out.append({
                 "path": d["path"],
                 "name": d["name"],
@@ -361,11 +383,18 @@ class InputCollector(Collector):
                 "keys": sorted(set(d["keys"]))[:60],
                 "key_count": len(set(d["keys"])),
                 "is_touchscreen": is_touch,
-                "is_keys": bool(d["keys"]) and not is_touch,
+                "is_keys": bool(d["keys"]) and not is_touch and not is_stylus,
                 "touch_max_x": abs_keys.get("ABS_MT_POSITION_X", {}).get("max"),
                 "touch_max_y": abs_keys.get("ABS_MT_POSITION_Y", {}).get("max"),
                 "max_slots": (abs_keys.get("ABS_MT_SLOT", {}).get("max") or 0) + 1
                              if "ABS_MT_SLOT" in abs_keys else None,
+                "is_stylus": is_stylus,
+                "pen_max_x": (abs_keys.get("ABS_X") or abs_keys.get("ABS_MT_POSITION_X")
+                              or {}).get("max"),
+                "pen_max_y": (abs_keys.get("ABS_Y") or abs_keys.get("ABS_MT_POSITION_Y")
+                              or {}).get("max"),
+                "pen_max_pressure": (abs_keys.get("ABS_PRESSURE")
+                                     or abs_keys.get("ABS_MT_PRESSURE") or {}).get("max"),
             })
         return out
 
@@ -376,27 +405,50 @@ class AudioCollector(Collector):
 
     def commands(self) -> dict[str, str]:
         return {
-            "aud.dumpsys": "dumpsys audio | head -150",
+            # Only the lines that matter: on recent Android the head of the
+            # dump is a long list of feature flags.
+            "aud.dumpsys": "dumpsys audio 2>/dev/null"
+                           " | grep -m6 -E 'mMode=|^ *Ringer mode|AUDIO_DEVICE_OUT_'",
+            # The devices attached right now, as the audio policy sees them:
+            # the reliable answer to "is there a loudspeaker, an earpiece, how
+            # many microphones".
+            "aud.policy": "dumpsys media.audio_policy 2>/dev/null"
+                          " | awk '/Available (output|input) devices/{p=1; print; next}"
+                          " /^[^ ]/{p=0} p' | grep -E 'Available|^  [0-9]+\\. Port ID'",
             "aud.cards": "cat /proc/asound/cards 2>/dev/null",
             "aud.pcm": "cat /proc/asound/pcm 2>/dev/null",
         }
 
     def parse(self, raw: dict[str, str]) -> dict[str, Any]:
         dump = raw.get("aud.dumpsys", "")
+        outputs, inputs = self._policy_devices(raw.get("aud.policy", ""))
+        if not outputs:
+            outputs = self._policy_devices(dump)[0]
         return {
             "cards": raw.get("aud.cards", "").strip(),
             "pcm_devices": [
                 line.strip() for line in raw.get("aud.pcm", "").splitlines()
                 if line.strip()
             ],
-            "mode": self._find(dump, r"mode:\s*(\w+)"),
-            "ringer_mode": self._find(dump, r"[Rr]inger mode:\s*(\w+)"),
-            "output_devices": sorted(set(re.findall(
-                r"\b(SPEAKER|EARPIECE|WIRED_HEADSET|WIRED_HEADPHONE|"
-                r"BLUETOOTH_A2DP|BLUETOOTH_SCO|USB_HEADSET|USB_DEVICE|HDMI)\b", dump))),
-            "has_speaker": "SPEAKER" in dump,
-            "has_earpiece": "EARPIECE" in dump,
+            "mode": self._find(dump, r"mMode=MODE_(\w+)") or self._find(dump, r"mode:\s*(\w+)"),
+            "ringer_mode": self._find(dump, r"[Rr]inger mode:[ \t]*(\w+)"),
+            "output_devices": outputs,
+            "input_devices": inputs,
+            "builtin_mics": sum(1 for d in inputs if d in ("BUILTIN_MIC", "BACK_MIC")),
+            "has_speaker": "SPEAKER" in outputs,
+            "has_earpiece": "EARPIECE" in outputs,
         }
+
+    @staticmethod
+    def _policy_devices(text: str) -> tuple[list[str], list[str]]:
+        """Attached devices from the audio policy, e.g. ['SPEAKER', 'EARPIECE']."""
+        outputs: list[str] = []
+        inputs: list[str] = []
+        for m in re.finditer(r"AUDIO_DEVICE_(OUT|IN)_(\w+)", text):
+            target = outputs if m.group(1) == "OUT" else inputs
+            if m.group(2) not in target:
+                target.append(m.group(2))
+        return outputs, inputs
 
     @staticmethod
     def _find(text: str, pattern: str) -> str:

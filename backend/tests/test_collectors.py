@@ -15,14 +15,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from phonevitals.collectors.hardware import CpuCollector, StorageCollector   # noqa: E402
 from phonevitals.collectors.identity import IdentityProbe                    # noqa: E402
+from phonevitals.collectors.base import is_temperature_zone                  # noqa: E402
 from phonevitals.collectors.peripherals import (                             # noqa: E402
-    BiometricCollector, CameraCollector, InputCollector,
+    AudioCollector, BiometricCollector, CameraCollector, InputCollector,
 )
 from phonevitals.collectors.history import HistoryCollector                  # noqa: E402
 from phonevitals.collectors.power import BatteryCollector, merge_agent_facts  # noqa: E402
 from phonevitals.collectors.radio import TelephonyCollector, WifiCollector   # noqa: E402
 from phonevitals.collectors.security import SecurityCollector                # noqa: E402
-from phonevitals.collectors.system import SystemCollector                    # noqa: E402
+from phonevitals.collectors.system import SystemCollector, form_factor       # noqa: E402
 
 
 def check(condition: bool, message: str) -> bool:
@@ -343,10 +344,155 @@ def identity() -> bool:
                  "IMEISV converted to the IMEI with its check digit")
 
 
+def tablet() -> bool:
+    """Formats first met on a Galaxy Tab S5e running LineageOS 22."""
+    print("tablet")
+    ok = True
+    # The audio policy lists what is attached; the head of `dumpsys audio`
+    # is only feature flags on Android 15.
+    policy = (
+        " Available output devices (2):\n"
+        "  1. Port ID: 2; \"Speaker\"; {AUDIO_DEVICE_OUT_SPEAKER, @:}\n"
+        "  2. Port ID: 9; \"Telephony Tx\"; {AUDIO_DEVICE_OUT_TELEPHONY_TX, @:}\n"
+        " Available input devices (3):\n"
+        "  1. Port ID: 12; \"Built-In Mic\"; {AUDIO_DEVICE_IN_BUILTIN_MIC, @:bottom}\n"
+        "  2. Port ID: 13; \"Built-In Back Mic\"; {AUDIO_DEVICE_IN_BACK_MIC, @:back}\n"
+        "  3. Port ID: 14; \"FM Tuner\"; {AUDIO_DEVICE_IN_FM_TUNER, @:}\n"
+    )
+    audio = AudioCollector().parse({"aud.policy": policy,
+                                    "aud.dumpsys": "Fun with Flags:\n\tandroid.media.audio.x:true\n"})
+    ok &= check(audio["has_speaker"] and not audio["has_earpiece"],
+                "loudspeaker found and no earpiece invented")
+    ok &= check(audio["builtin_mics"] == 2, "two built-in microphones counted")
+
+    # One section per HAL device instead of "Camera N information:".
+    dump = (
+        "== Camera HAL device device@1.1/internal/0 (v1.1) static information: ==\n"
+        "  API1 info:\n    Has a flash unit: false\n    Facing: Back\n"
+        "      android.flash.info.available (50000): byte[1]\n        [FALSE ]\n"
+        "      android.info.supportedHardwareLevel (150000): byte[1]\n        [3 ]\n"
+        "      android.sensor.info.pixelArraySize (f0006): int32[2]\n        [4128 3096 ]\n"
+        "== Camera HAL device device@1.1/internal/0 (v1.1) dumpState: ==\n"
+        "== Camera HAL device device@1.1/internal/1 (v1.1) static information: ==\n"
+        "    Facing: Front\n"
+        "      android.sensor.info.pixelArraySize (f0006): int32[2]\n        [3264 2448 ]\n"
+        "== Vendor tags: ==\n"
+    )
+    cams = CameraCollector().parse({"cam.dumpsys": "Number of camera devices: 2\n" + dump})
+    ok &= check([(c["id"], c["facing"], c["megapixels"]) for c in cams["cameras"]]
+                == [("0", "rear", 12.8), ("1", "front", 8.0)],
+                "cameras read from the per-HAL-device sections")
+    ok &= check(cams["has_flash"] is False and cams["cameras"][0]["hardware_level"] == "LEVEL_3",
+                "no flash, hardware level named from its enum value")
+
+    # sysfs and /proc/partitions closed: boot device and StorageManager remain.
+    storage = StorageCollector().parse({
+        "stor.boot_props": "7c4000.sdhci\nmmcblk0\n",
+        "stor.sm_total": "Internal storage (null) total size: 64000000000 (61035 MiB)",
+        "stor.df_k": "Filesystem 1K-blocks Used Available Use% Mounted on\n"
+                     "/dev/block/dm-9 51666916 16000000 35000000 32% /data\n",
+    })
+    ok &= check(storage["type"] == "eMMC", "eMMC recognised from the boot device")
+    ok &= check(storage["nominal_gb"] == 64 and not storage["nominal_estimated"],
+                "64 GB from StorageManager, not estimated from /data")
+    ufs = StorageCollector().parse({"stor.boot_props": "1d84000.ufshc\nsda\n"})
+    ok &= check(ufs["type"] == "UFS", "UFS recognised from the boot device")
+
+    # The clock reset to New Year at first boot: not the setup date.
+    hist = HistoryCollector().parse({
+        "hist.install_days": "9 1 1970-01-01\n244 3 2020-01-01\n1 1 2026-08-08\n"
+                             "18 18 2026-08-09\n"})
+    ok &= check(hist["setup_date"]["iso"] == "2026-08-08", "New Year clock default skipped")
+
+    ok &= check(form_factor({"system": {"props": {"ro.build.characteristics": "tablet"}}})
+                == "tablet", "tablet from the build characteristics")
+    ok &= check(form_factor({"display": {"resolution": {"width": 1600, "height": 2560},
+                                         "physical_density": 320}}) == "tablet",
+                "tablet from a smallest width of 800 dp")
+    ok &= check(form_factor({"display": {"resolution": {"width": 1080, "height": 2400},
+                                         "physical_density": 420}}) == "phone",
+                "a phone stays a phone")
+    ok &= check(not is_temperature_zone("lmh-dcvs-01") and is_temperature_zone("cpu0-gold-usr"),
+                "limits-management zones are not temperatures")
+    return ok
+
+
+def users_pen_capacity() -> bool:
+    """Users and profiles, pen digitizers, battery capacity from current."""
+    import asyncio
+
+    from phonevitals.live import PenMonitor
+    from phonevitals.testsuite import TestSuite
+
+    print("users, pen and battery capacity")
+    ok = True
+    # As the phone sends it: names already cut away.
+    users = HistoryCollector().parse({"hist.users": (
+        "  UserInfo{0:c13}\n    Type: android.os.usertype.full.SYSTEM\n"
+        "  UserInfo{10:1030}\n    Type: android.os.usertype.profile.MANAGED\n"
+        "  UserInfo{11:410}\n    Type: android.os.usertype.full.SECONDARY\n"
+        "  UserInfo{12:1010}\n    Type: android.os.usertype.profile.PRIVATE\n"
+        "users-read\n")})["users"]
+    ok &= check(users["secondary"] == 1 and users["work_profile"] and users["private_space"],
+                "secondary user, work profile and private space found")
+    headless = HistoryCollector().parse({"hist.users": (
+        "  UserInfo{0:800}\n    Type: android.os.usertype.system.HEADLESS\n"
+        "  UserInfo{10:4c12}\n    Type: android.os.usertype.full.SECONDARY\n"
+        "users-read\n")})["users"]
+    ok &= check(headless["secondary"] == 0,
+                "on a headless system user the main user is not counted as another")
+
+    getevent = (
+        "add device 1: /dev/input/event5\n"
+        "  name:     \"sec_e-pen\"\n"
+        "  events:\n"
+        "    KEY (0001): BTN_TOOL_PEN BTN_TOOL_RUBBER BTN_TOUCH BTN_STYLUS\n"
+        "    ABS (0003): ABS_X : value 0, min 0, max 20280, fuzz 0, flat 0, resolution 0\n"
+        "                ABS_Y : value 0, min 0, max 12780, fuzz 0, flat 0, resolution 0\n"
+        "                ABS_PRESSURE : value 0, min 0, max 4095, fuzz 0, flat 0, resolution 0\n"
+    )
+    inp = InputCollector().parse({"in.getevent": getevent})
+    pen = inp["stylus"]
+    ok &= check(bool(pen) and pen["pen_max_pressure"] == 4095 and not inp["key_devices"],
+                "pen digitizer recognised, not taken for buttons")
+
+    events: list[dict] = []
+    monitor = PenMonitor(None, "", "/dev/input/event5", events.append,
+                         max_x=20280, max_y=12780, max_pressure=4095)
+    lines = ["[ 1.0] EV_KEY BTN_TOOL_PEN DOWN", "[ 1.0] EV_ABS ABS_X 00000400",
+             "[ 1.0] EV_ABS ABS_Y 00000200", "[ 1.0] EV_SYN SYN_REPORT 00000000",
+             "[ 1.1] EV_KEY BTN_TOUCH DOWN", "[ 1.1] EV_ABS ABS_PRESSURE 00000800",
+             "[ 1.1] EV_KEY BTN_STYLUS DOWN", "[ 1.1] EV_SYN SYN_REPORT 00000000"]
+
+    async def feed() -> None:
+        for line in lines:
+            await monitor._handle(line)
+    asyncio.run(feed())
+    ok &= check(events[0]["in_range"] and not events[0]["contact"] and events[0]["x"] == 1024,
+                "hover reported before contact")
+    ok &= check(events[1]["contact"] and events[1]["pressure"] == 2048 and events[1]["button"],
+                "contact, pressure and side button reported")
+
+    # Charging at a steady 700 mA, one percent every 6 minutes: 7000 mAh.
+    samples = []
+    level = 50
+    for i in range(0, 25 * 60, 2):
+        if i and i % 360 == 0:
+            level += 1
+        samples.append({"elapsed_ms": 1_000_000 + i * 1000, "capacity_percent": level,
+                        "current_now_ua": 700_000})
+    est = TestSuite._capacity_from_samples(samples)
+    ok &= check(est["steps"] == 3 and abs(est["capacity_mah"] - 7000) < 50,
+                f"capacity from whole-percent steps ({est.get('capacity_mah')} mAh)")
+    ok &= check(TestSuite._capacity_from_samples(samples[:150])["steps"] == 0,
+                "no estimate before two level changes")
+    return ok
+
+
 def main() -> int:
     ok = True
     for case in (battery, battery_sources, charging_units, history, wifi, telephony, cpu, storage, camera,
-                 input_devices, biometrics, security, identity):
+                 input_devices, biometrics, security, identity, tablet, users_pen_capacity):
         ok &= case()
     print()
     print("RESULT: " + ("PASSED" if ok else "FAILED"))

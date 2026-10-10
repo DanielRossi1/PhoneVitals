@@ -6,6 +6,7 @@ export const TEST_ICONS = {
   wifi_scan: 'wifi',
   storage_speed: 'storage',
   charging: 'battery',
+  battery_capacity: 'battery',
   stress: 'chip',
   speaker: 'speaker',
   microphone: 'speaker',
@@ -17,6 +18,7 @@ export const TEST_ICONS = {
   buttons: 'buttons',
   touch: 'touch',
   multitouch: 'touch',
+  pen: 'touch',
   screen: 'eye',
   imu: 'live',
   proximity: 'phone',
@@ -51,12 +53,19 @@ export const FLOWS = {
   },
   screen: {
     instruction: 'Pick a colour to show it full screen on the phone, then inspect the panel '
-      + 'closely and from different angles for dead pixels, tint or banding.',
+      + 'closely and from different angles for dead pixels, tint or banding. Mid grey shows '
+      + 'burn-in best.',
   },
   touch: {
     instruction: 'Run a finger over the whole screen, edges included, as if colouring it in. '
       + 'Cells that stay empty in the map do not respond to touch.',
     touch: true,
+  },
+  pen: {
+    instruction: 'Write over the whole screen with the stylus, lightly and then firmly, and '
+      + 'press its side button. The line must follow the tip without gaps and grow wider '
+      + 'with pressure; hovering just above the glass shows a ring.',
+    pen: true,
   },
   multitouch: {
     instruction: 'Place two fingers on the screen, then three, four and five. The counter '
@@ -103,7 +112,7 @@ export const SENSOR_INFO = {
 };
 
 export const SCREEN_PATTERNS = {
-  white: '#fff', black: '#000', red: '#f00', green: '#0f0', blue: '#00f',
+  white: '#fff', black: '#000', red: '#f00', green: '#0f0', blue: '#00f', grey: '#808080',
   gradient: 'linear-gradient(#000,#fff)',
 };
 

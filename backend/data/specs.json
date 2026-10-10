@@ -24,7 +24,8 @@
     "max_refresh_hz": "maximum refresh rate",
     "confidence": "high | medium | low",
     "soc_ids": "technical chip designations as the system declares them (ro.soc.model, ro.board.platform, kernel Hardware line). The comparison uses only these: the commercial name never appears in the properties.",
-    "security_updates_until": "year and month until which the manufacturer guarantees security updates at the least (its published update policy); omit when not known for certain"
+    "security_updates_until": "year and month until which the manufacturer guarantees security updates at the least (its published update policy); omit when not known for certain",
+    "wifi_only_models": "models of the entry without a mobile radio (Wi-Fi-only tablets), matched like models; the others are expected to have one"
   },
   "devices": [
     {
@@ -642,6 +643,41 @@
         "pineapple"
       ],
       "security_updates_until": "2031-01"
+    },
+    {
+      "name": "Samsung Galaxy Tab S5e",
+      "brand": "samsung",
+      "devices": [
+        "gts4lv",
+        "gts4lvwifi"
+      ],
+      "models": [
+        "SM-T720",
+        "SM-T725"
+      ],
+      "soc": "Snapdragon 670",
+      "cpu_cores": 8,
+      "ram_gb": [
+        4,
+        6
+      ],
+      "storage_gb": [
+        64,
+        128
+      ],
+      "resolution": {
+        "width": 1600,
+        "height": 2560
+      },
+      "max_refresh_hz": 60,
+      "confidence": "high",
+      "soc_ids": [
+        "sdm670",
+        "sdm710"
+      ],
+      "wifi_only_models": [
+        "SM-T720"
+      ]
     }
   ]
 }

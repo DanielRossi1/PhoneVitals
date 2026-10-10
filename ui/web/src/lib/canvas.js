@@ -265,6 +265,107 @@ export class TouchView extends View {
   }
 }
 
+/**
+ * The stylus: strokes drawn as the digitizer reports them, line width
+ * following pressure, plus the hover point while the pen is in range.
+ */
+export class PenView extends View {
+  strokes = [];
+  current = null;
+  hover = null;
+  maxX = 0;
+  maxY = 0;
+  maxPressure = 0;
+  covered = new Set();
+  stats = { pressureMin: null, pressureMax: 0, button: false, hovered: false, eraser: false };
+
+  update(msg) {
+    this.maxX = num(msg.max_x) || this.maxX;
+    this.maxY = num(msg.max_y) || this.maxY;
+    this.maxPressure = num(msg.max_pressure) || this.maxPressure;
+    const x = num(msg.x), y = num(msg.y), pressure = num(msg.pressure) ?? 0;
+    const st = this.stats;
+    if (msg.button) st.button = true;
+    if (msg.eraser) st.eraser = true;
+    if (msg.in_range && !msg.contact) st.hovered = true;
+    this.hover = msg.in_range && x !== null && y !== null ? { x, y } : null;
+
+    if (msg.contact && x !== null && y !== null) {
+      if (!this.current) {
+        this.current = [];
+        this.strokes.push(this.current);
+      }
+      this.current.push({ x, y, p: pressure });
+      if (pressure > 0) {
+        st.pressureMin = st.pressureMin === null ? pressure : Math.min(st.pressureMin, pressure);
+        st.pressureMax = Math.max(st.pressureMax, pressure);
+      }
+      if (this.maxX && this.maxY) {
+        const c = Math.min(TouchView.COLS - 1, Math.floor((x / this.maxX) * TouchView.COLS));
+        const r = Math.min(TouchView.ROWS - 1, Math.floor((y / this.maxY) * TouchView.ROWS));
+        this.covered.add(r * TouchView.COLS + c);
+      }
+    } else {
+      this.current = null;
+    }
+    if (this.strokes.length > 400) this.strokes.splice(0, 200);
+    this.touch();
+  }
+
+  clear() {
+    this.strokes = [];
+    this.current = null;
+    this.hover = null;
+    this.covered = new Set();
+    this.stats = { pressureMin: null, pressureMax: 0, button: false, hovered: false, eraser: false };
+    this.touch();
+  }
+
+  draw(ctx, w, h, p) {
+    const mx = this.maxX || 1600, my = this.maxY || 2560;
+    const aspect = my / mx;
+    let dw = w - 16, dh = dw * aspect;
+    if (dh > h - 16) { dh = h - 16; dw = dh / aspect; }
+    const ox = (w - dw) / 2, oy = (h - dh) / 2;
+    const { COLS, ROWS } = TouchView;
+    const px = (v) => ox + (v / mx) * dw, py = (v) => oy + (v / my) * dh;
+
+    ctx.fillStyle = p.ok;
+    ctx.globalAlpha = 0.14;
+    for (const cell of this.covered) {
+      const c = cell % COLS, r = Math.floor(cell / COLS);
+      ctx.fillRect(ox + (dw * c) / COLS, oy + (dh * r) / ROWS, dw / COLS, dh / ROWS);
+    }
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = p.gridStrong;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(ox, oy, dw, dh, 10);
+    ctx.stroke();
+
+    const full = this.maxPressure || this.stats.pressureMax || 1;
+    ctx.strokeStyle = p.accent;
+    ctx.lineCap = 'round';
+    for (const stroke of this.strokes) {
+      for (let i = 1; i < stroke.length; i++) {
+        const a = stroke[i - 1], b = stroke[i];
+        ctx.lineWidth = 0.8 + 5 * Math.min(1, b.p / full);
+        ctx.beginPath();
+        ctx.moveTo(px(a.x), py(a.y));
+        ctx.lineTo(px(b.x), py(b.y));
+        ctx.stroke();
+      }
+    }
+    if (this.hover) {
+      ctx.strokeStyle = p.ok;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(px(this.hover.x), py(this.hover.y), 9, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+}
+
 // Constellations as defined by android.location.GnssStatus.
 export const CONSTELLATIONS = {
   1: ['GPS', '#4c8dff'],
@@ -347,6 +448,7 @@ export const live = {
   temp: new LineChart({ series: 1, symmetric: false, minRange: 50, capacity: 120,
                         colors: (p) => [p.temp] }),
   touch: new TouchView(),
+  pen: new PenView(),
   sky: new SkyPlot(),
 };
 

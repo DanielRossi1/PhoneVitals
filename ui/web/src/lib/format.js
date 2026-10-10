@@ -54,3 +54,9 @@ export function daysSince(iso) {
 export function plural(n, one, many = `${one}s`) {
   return `${n} ${n === 1 ? one : many}`;
 }
+
+/** Instructions are written for a phone; a tablet is called a tablet. */
+export function forDevice(text, kind) {
+  if (!text || !kind || kind === 'phone') return text;
+  return text.replace(/\b([Tt]he|[Tt]his) phone\b/g, `$1 ${kind}`);
+}

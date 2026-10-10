@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .adb import Adb, Device
-from .analysis.authenticity import AuthenticityEngine, SEVERITY_WEIGHT, summarise
+from .analysis.authenticity import AuthenticityEngine, assess
 from .analysis.imei import analyse_imeis
 from .analysis.memory import memory_findings
 from .analysis.specdb import SpecDatabase
@@ -37,7 +37,7 @@ from .collectors.radio import (
     ConnectivityCollector, TelephonyCollector, WifiCollector,
 )
 from .collectors.security import PackagesCollector, SecurityCollector
-from .collectors.system import SystemCollector
+from .collectors.system import SystemCollector, form_factor
 
 # The order only matters for the progress bar: every command ends up in the
 # same batch regardless.
@@ -143,6 +143,8 @@ class Analyzer:
                 await self._emit(
                     "collector_error", collector=collector.name,
                     error=str(exc), trace=traceback.format_exc(limit=3))
+
+        snapshot.setdefault("system", {})["form_factor"] = form_factor(snapshot)
 
         # -- 4. identifiers (multi-step, needs an unlocked screen) -------------
         if read_imei:
@@ -368,10 +370,6 @@ class Analyzer:
         for f in report["findings"]:
             by_sev.setdefault(f["severity"], []).append(f)
 
-        penalty = sum(
-            SEVERITY_WEIGHT.get(f["severity"], 0) for f in report["findings"]
-        )
-        report["score"] = max(0, 100 - penalty)
         report["counts"] = {k: len(v) for k, v in by_sev.items()}
         report["by_severity"] = by_sev
 
@@ -380,8 +378,7 @@ class Analyzer:
             by_cat.setdefault(f["category"], []).append(f)
         report["by_category"] = by_cat
 
-        report["verdict"], report["headline"] = summarise(
-            len(by_sev["critical"]), len(by_sev["warning"]))
+        report["score"], report["verdict"], report["headline"] = assess(report["findings"])
         return report
 
     @staticmethod
@@ -397,6 +394,7 @@ class Analyzer:
         res = disp.get("resolution") or {}
 
         return {
+            "form_factor": s.get("system", {}).get("form_factor", "phone"),
             "brand": eff.get("brand", ""),
             "model": eff.get("model", ""),
             "device": eff.get("device", ""),

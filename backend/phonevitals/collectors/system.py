@@ -286,3 +286,31 @@ class SystemCollector(Collector):
             return float(text.split()[0])
         except (ValueError, IndexError):
             return None
+
+
+def form_factor(snapshot: dict[str, Any]) -> str:
+    """"phone", "tablet", "watch" or "tv", from the parsed snapshot.
+
+    The build says so in ro.build.characteristics; when it does not, the
+    screen decides with the same rule Android's resource system uses: a
+    smallest width of 600 dp or more is a tablet.
+    """
+    features = {f.split("=", 1)[0]
+                for f in (snapshot.get("sensors") or {}).get("features") or []}
+    if "android.hardware.type.watch" in features:
+        return "watch"
+    if {"android.software.leanback", "android.hardware.type.television"} & features:
+        return "tv"
+    props = (snapshot.get("system") or {}).get("props") or {}
+    characteristics = props.get("ro.build.characteristics", "").split(",")
+    if "tablet" in characteristics:
+        return "tablet"
+    if "phone" in characteristics:
+        return "phone"
+    disp = snapshot.get("display") or {}
+    res = disp.get("resolution") or {}
+    density = to_int(str(disp.get("physical_density") or ""))
+    if res.get("width") and res.get("height") and density:
+        if min(res["width"], res["height"]) * 160 / density >= 600:
+            return "tablet"
+    return "phone"

@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TC="$ROOT/.toolchain"
+TC="${PHONEVITALS_TOOLCHAIN:-$ROOT/.toolchain}"
 SDK="$TC/android-sdk"
 API=34
 BUILD_TOOLS="34.0.0"

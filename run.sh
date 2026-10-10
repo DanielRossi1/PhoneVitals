@@ -3,7 +3,9 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TC="$ROOT/.toolchain"
+# The toolchain made by scripts/setup_toolchain.sh; PHONEVITALS_TOOLCHAIN
+# points at one elsewhere, for instance shared between two checkouts.
+TC="${PHONEVITALS_TOOLCHAIN:-$ROOT/.toolchain}"
 ELECTRON="$ROOT/ui/node_modules/.bin/electron"
 
 missing=0
@@ -65,6 +67,12 @@ echo "Starting PhoneVitals…"
 # The Electron shim starts with `#!/usr/bin/env node`: on a machine without a
 # system-wide Node it needs the local one on PATH.
 export PATH="$TC/node/bin:$PATH"
+# The interface looks for the toolchain inside the checkout; name it
+# explicitly so one kept elsewhere works too.
+export PHONEVITALS_PYTHON="${PHONEVITALS_PYTHON:-$TC/venv/bin/python}"
+if [ -z "${PHONEVITALS_ADB:-}" ] && [ -x "$TC/platform-tools/adb" ]; then
+  export PHONEVITALS_ADB="$TC/platform-tools/adb"
+fi
 
 # Build the interface when it is missing or older than its sources.
 if [ ! -f "$ROOT/ui/dist/index.html" ] || \

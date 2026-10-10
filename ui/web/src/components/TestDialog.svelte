@@ -2,7 +2,7 @@
   import Icon from './Icon.svelte';
   import { app, finishTest, runTest, setLive } from '../lib/app.svelte.js';
   import { live } from '../lib/canvas.js';
-  import { fixed } from '../lib/format.js';
+  import { fixed, forDevice } from '../lib/format.js';
   import { FLOWS, KEYS, SCREEN_PATTERNS, SENSOR_INFO, TEST_ICONS } from '../lib/tests.js';
 
   let dialog;
@@ -11,7 +11,7 @@
   const id = $derived(app.dialog);
   const meta = $derived(app.tests.find((t) => t.id === id));
   const flow = $derived(FLOWS[id] ?? {});
-  const needsLive = $derived(Boolean(flow.sensors || flow.touch));
+  const needsLive = $derived(Boolean(flow.sensors || flow.touch || flow.pen));
 
   $effect(() => {
     if (id && dialog && !dialog.open) {
@@ -51,7 +51,7 @@
               onclick={() => finishTest(null)}><Icon name="close" size={16} /></button>
     </header>
 
-    <p class="instruction">{flow.instruction ?? meta?.description ?? ''}</p>
+    <p class="instruction">{forDevice(flow.instruction ?? meta?.description ?? '', app.snapshot?.summary?.form_factor)}</p>
 
     {#if needsLive && !app.live.running}
       <div class="note note-warn"><Icon name="alert" />
@@ -92,6 +92,18 @@
           {/each}
         </div>
       {/if}
+    {:else if flow.pen}
+      {@const pen = app.live.pen}
+      <div class="touch">
+        <canvas use:live.pen.attach aria-label="Strokes reported by the pen digitizer"></canvas>
+        <div class="readout pen" aria-live="off">
+          <div><span>Pressure</span><b>{pen && pen.maxPressure
+            ? `${Math.round((pen.pressure / pen.maxPressure) * 100)}% · peak ${Math.round((pen.pressureMax / pen.maxPressure) * 100)}%`
+            : (pen?.pressure ?? '—')}</b></div>
+          <div><span>Hover</span><b>{pen?.hovered ? 'seen' : '—'}</b></div>
+          <div><span>Side button</span><b>{pen?.button ? 'pressed' : '—'}</b></div>
+        </div>
+      </div>
     {:else if flow.touch}
       <div class="touch">
         <canvas use:live.touch.attach aria-label="Touch positions reported by the digitizer"></canvas>
@@ -193,6 +205,7 @@
     border-radius: 10px;
     background: var(--surface-2);
   }
+  .readout.pen { width: 100%; }
   .readout span { font-size: 12px; color: var(--text-3); }
   .readout b { font: 600 16px var(--mono); font-variant-numeric: tabular-nums; }
   footer { display: flex; align-items: center; gap: 8px; margin-top: 22px; }

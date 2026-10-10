@@ -40,6 +40,10 @@ from .live import (
 log = logging.getLogger(__name__)
 
 REMOTE_DIR = "/data/local/tmp/pvtest"
+# Screen patterns go to shared storage: gallery apps cannot read
+# /data/local/tmp, and open an image from there only to close it at once.
+PATTERN_DIR = "/sdcard/Pictures/PhoneVitals"
+MEDIA_IMAGES = "content://media/external/images/media"
 
 # Gravitational acceleration at sea level. It varies by about 0.5% between
 # equator and poles: irrelevant against the tolerance used here.
@@ -132,6 +136,10 @@ SCREEN_PATTERNS = [
      "to: defects stand out more."),
     ("blue", (0, 0, 255),
      "Blue channel check, the subpixel that ages first on OLED."),
+    ("grey", (128, 128, 128),
+     "Mid grey is where burn-in shows: on OLED look for ghost shapes of the "
+     "status bar, navigation buttons or keyboard, on LCD for darker or tinted "
+     "patches (mura)."),
     ("gradient", None,
      "The gradient should be continuous. Hard bands or steps indicate a "
      "lower-grade panel or a driver other than the original."),
@@ -176,6 +184,7 @@ class TestSuite:
         self.results: dict[str, TestResult] = {}
         self._patterns: dict[str, str] = {}
         self._pushed_patterns = False
+        self._pattern_size: tuple[int, int] | None = None
         self._pushed_dex = False
         # Device settings changed by a test, with the value to put back.
         self._saved_settings: dict[str, str] = {}
@@ -187,6 +196,10 @@ class TestSuite:
             await res
 
     async def _publish(self, result: TestResult) -> None:
+        kind = (self.snapshot.get("system") or {}).get("form_factor") or "phone"
+        if kind != "phone":
+            result.outcome_detail = re.sub(r"\b([Tt]he|[Tt]his) phone\b", rf"\1 {kind}",
+                                           result.outcome_detail)
         self.results[result.test_id] = result
         await self._emit({"type": "test_update", "test": result.to_dict()})
 
@@ -201,7 +214,17 @@ class TestSuite:
         has = (self.snapshot.get("sensors") or {}).get("has") or {}
         input_info = self.snapshot.get("input") or {}
         vib = self.snapshot.get("vibrator") or {}
-        cams = (self.snapshot.get("cameras") or {}).get("count") or 0
+        cameras = self.snapshot.get("cameras") or {}
+        cams = cameras.get("count") or 0
+        features = {f.split("=", 1)[0] for f in
+                    (self.snapshot.get("sensors") or {}).get("features") or []}
+
+        battery = self.snapshot.get("battery") or {}
+        has_battery_reading = battery.get("level_percent") is not None
+
+        def declared(feature: str) -> bool:
+            # No feature list at all (older snapshots): do not hide anything.
+            return not features or feature in features
 
         items = [
             # The three automatic ones come first: they produce a result
@@ -235,6 +258,13 @@ class TestSuite:
              "description": "With the USB cable in, check that current actually "
                             "flows into the battery: port, cable path and "
                             "charging circuit in one go."},
+            {"id": "battery_capacity", "title": "Battery capacity",
+             "kind": "automatic", "long": True,
+             "available": has_battery_reading,
+             "description": "Follow the charge for a few percent and integrate the "
+                            "current: an estimate of the real capacity, for devices "
+                            "that do not report battery health. Takes 10 to 30 "
+                            "minutes with the battery below 90%."},
             {"id": "stress", "title": "Processor under load",
              "kind": "automatic", "available": True,
              "description": "Load every core for 30 seconds: each must reach its "
@@ -255,11 +285,11 @@ class TestSuite:
              "description": "Switch Bluetooth on and check the radio comes up, then "
                             "put it back as it was."},
             {"id": "cellular", "title": "Mobile network",
-             "kind": "automatic", "available": True,
+             "kind": "automatic", "available": declared("android.hardware.telephony"),
              "description": "With a SIM inserted, check the phone registers on a "
                             "network and how strong the signal is."},
             {"id": "gnss", "title": "Satellite positioning",
-             "kind": "automatic", "available": True,
+             "kind": "automatic", "available": declared("android.hardware.location.gps"),
              "description": "Switch the GNSS receiver on and wait for satellites "
                             "(up to 45 seconds; works best near a window)."},
             {"id": "camera", "title": "Cameras", "kind": "guided", "available": cams > 0,
@@ -277,6 +307,11 @@ class TestSuite:
              "available": bool(input_info.get("touchscreen")),
              "description": "Run a finger over the whole surface: the cells "
                             "reached are coloured in, revealing dead zones."},
+            {"id": "pen", "title": "Stylus", "kind": "guided",
+             "available": bool(input_info.get("stylus")),
+             "description": "Write over the whole screen with the stylus: the line "
+                            "must follow the tip, its width the pressure, and the "
+                            "side button must register."},
             {"id": "multitouch", "title": "Multitouch", "kind": "guided",
              "available": bool(input_info.get("touchscreen")),
              "description": "Put several fingers down together: counts how many "
@@ -306,10 +341,17 @@ class TestSuite:
              "description": "Plays tones at different frequencies on each "
                             "speaker and checks the recording."},
             {"id": "torch", "title": "Flash", "kind": "guided",
-             "available": cams > 0,
+             "available": bool(cameras.get("has_flash"))
+                          or (cams > 0 and declared("android.hardware.camera.flash")
+                              and bool(features)),
              "description": "Turns the flash on and off: you confirm whether it "
                             "lights up."},
         ]
+        kind = (self.snapshot.get("system") or {}).get("form_factor") or "phone"
+        if kind != "phone":
+            for item in items:
+                item["description"] = re.sub(r"\b([Tt]he) phone\b", rf"\1 {kind}",
+                                             item["description"])
         return items
 
     # ------------------------------------------------------ individual tests
@@ -325,6 +367,7 @@ class TestSuite:
             "buttons": self._test_buttons,
             "storage_speed": self._test_storage_speed,
             "charging": self._test_charging,
+            "battery_capacity": self._test_battery_capacity,
             "stress": self._test_stress,
             "speaker": self._test_speaker,
             "microphone": self._test_microphone,
@@ -969,34 +1012,73 @@ class TestSuite:
 
     # -- screen -------------------------------------------------------------
 
-    async def _push_patterns(self) -> None:
-        """Generate the patterns at the real resolution and copy them across."""
+    async def _screen_size(self) -> tuple[int, int]:
+        """Current logical size, rotation included: a portrait pattern on a
+        tablet held in landscape would show with black bars at the sides."""
+        out = await self.adb.text(
+            self.serial, "dumpsys window displays | grep -m1 -oE 'cur=[0-9]+x[0-9]+'",
+            timeout=10)
+        m = re.search(r"(\d+)x(\d+)", out or "")
+        if m:
+            return int(m.group(1)), int(m.group(2))
         res = (self.snapshot.get("display") or {}).get("resolution") or {}
-        w = _as_number(res.get("width"), 1080, 16, 16384)
-        h = _as_number(res.get("height"), 2400, 16, 16384)
+        return (int(_as_number(res.get("width"), 1080, 16, 16384)),
+                int(_as_number(res.get("height"), 2400, 16, 16384)))
+
+    async def _push_patterns(self, size: tuple[int, int]) -> None:
+        """Generate the patterns for the current screen shape and copy them across."""
+        w, h = size
         # A full-resolution PNG is needlessly heavy to transfer: for a flat
         # colour a small image is enough, and the viewer scales it to full
         # screen without losing uniformity.
-        sw, sh = max(2, int(w) // 4), max(2, int(h) // 4)
+        sw, sh = max(2, w // 4), max(2, h // 4)
 
         # Flagged before anything is created, so cleanup also removes a
         # directory left half-filled by a failed push.
         self._pushed_patterns = True
-        await self.adb.shell(self.serial, f"mkdir -p {REMOTE_DIR}", timeout=10)
+        self._patterns.clear()
+        await self._remove_patterns()
+        await self.adb.shell(self.serial, f"mkdir -p {PATTERN_DIR}", timeout=10)
 
         with tempfile.TemporaryDirectory(prefix="phonevitals-") as tmp:
             for name, rgb, _desc in SCREEN_PATTERNS:
-                if name in self._patterns:
-                    continue
                 data = gradient_png(sw, sh) if rgb is None else solid_png(sw, sh, rgb)
-                local = os.path.join(tmp, f"{name}.png")
+                local = os.path.join(tmp, f"pv-{name}.png")
                 with open(local, "wb") as fh:
                     fh.write(data)
-                remote = f"{REMOTE_DIR}/{name}.png"
+                remote = f"{PATTERN_DIR}/pv-{name}.png"
                 r = await self.adb.raw("-s", self.serial, "push", local, remote,
                                        timeout=30)
                 if r.ok:
                     self._patterns[name] = remote
+        self._pattern_size = size
+
+    async def _media_uri(self, remote: str) -> str | None:
+        """content:// address of a pushed image, once the media index has it."""
+        where = shlex.quote(f"_data LIKE '%{remote.rsplit('/', 1)[-1]}'")
+        for _ in range(6):
+            out = await self.adb.text(
+                self.serial,
+                f"content query --uri {MEDIA_IMAGES} --projection _id --where {where}",
+                timeout=10)
+            m = re.search(r"_id=(\d+)", out or "")
+            if m:
+                return f"{MEDIA_IMAGES}/{m.group(1)}"
+            # Older releases index shared storage only when asked to.
+            await self.adb.shell(
+                self.serial,
+                "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE "
+                f"-d {shlex.quote('file://' + remote)}", timeout=10)
+            await asyncio.sleep(0.5)
+        return None
+
+    async def _remove_patterns(self) -> None:
+        where = shlex.quote("_data LIKE '%/Pictures/PhoneVitals/pv-%'")
+        await self.adb.shell(
+            self.serial,
+            f"rm -rf {PATTERN_DIR} {REMOTE_DIR}; "
+            f"content delete --uri {MEDIA_IMAGES} --where {where} 2>/dev/null; true",
+            timeout=15)
 
     async def _test_screen(self, pattern: str = "white", **_) -> dict[str, Any]:
         result = TestResult("screen", "Pixels and screen uniformity", "guided",
@@ -1008,9 +1090,10 @@ class TestSuite:
         if pattern not in names:
             pattern = names[0]
 
-        if pattern not in self._patterns:
-            await self._push_patterns()
-        remote = self._patterns.get(pattern, f"{REMOTE_DIR}/{pattern}.png")
+        size = await self._screen_size()
+        if pattern not in self._patterns or size != self._pattern_size:
+            await self._push_patterns(size)
+        remote = self._patterns.get(pattern, f"{PATTERN_DIR}/pv-{pattern}.png")
 
         # Maximum brightness: defects are far easier to see. Automatic
         # brightness would override it, so that is switched off too; both are
@@ -1021,8 +1104,14 @@ class TestSuite:
         # Chain of attempts: opening an image full screen depends on which
         # gallery is installed, so several routes are tried and the one that
         # worked is reported.
+        media = await self._media_uri(remote)
         uri = shlex.quote(f"file://{remote}")
-        attempts = [
+        attempts = []
+        if media:
+            attempts.append(("gallery",
+                             f"am start -a android.intent.action.VIEW -d {shlex.quote(media)} "
+                             "-t image/png --grant-read-uri-permission"))
+        attempts += [
             ("image viewer",
              f"am start -a android.intent.action.VIEW -d {uri} -t image/png "
              "--grant-read-uri-permission"),
@@ -1045,10 +1134,11 @@ class TestSuite:
         }
 
         if opened_with is None:
-            result.status = "failed"
+            # A missing viewer says nothing about the panel.
+            result.status = "inconclusive"
             result.outcome_detail = (
                 "The pattern could not be opened full screen: no viewer accepted "
-                "the file. On this device the screen test has to be done "
+                "the file. Unlock the screen and try again, or check the panel "
                 "manually."
             )
             result.finished_at = time.time()
@@ -1265,6 +1355,140 @@ class TestSuite:
             "status": int(status) if status.isdigit() else -1,
             "level": int(level) if level.isdigit() else None,
             "voltage_v": int(voltage) / 1000 if voltage.isdigit() else None,
+        }
+
+    # -- battery capacity --------------------------------------------------------
+
+    CAPACITY_MAX_S = 30 * 60
+    CAPACITY_STEPS = 3
+
+    async def _test_battery_capacity(self, **_) -> dict[str, Any]:
+        """Estimate the real capacity from current integrated over whole percents.
+
+        The gauge's percentage is itself computed against the capacity it has
+        learned, so the charge that moves it by one percent is a hundredth of
+        that capacity. Timing starts and ends on a change of percentage, which
+        removes the rounding of the integer level from both ends.
+        """
+        result = TestResult("battery_capacity", "Battery capacity", "automatic",
+                            status="running", started_at=time.time())
+        await self._publish(result)
+        if not await self._ensure_dex():
+            return await self._finish(result, "inconclusive", "The agent could not be started.")
+
+        # The agent does not always get the battery broadcast: status and
+        # power source come from the battery service.
+        state = self._battery_state(
+            await self.adb.text(self.serial, "dumpsys battery", timeout=15))
+        if state["status"] == 5:
+            return await self._finish(result, "inconclusive",
+                                      "The battery is full, so the level cannot move while "
+                                      "charging. Repeat with the battery below 80%.")
+        if state["plugged"] and (state["level"] or 0) >= 90:
+            return await self._finish(result, "inconclusive",
+                                      f"The battery is at {state['level']}%: above 90% charging "
+                                      "slows down and the estimate is unreliable. Repeat below "
+                                      "80%.")
+
+        samples: list[dict[str, Any]] = []
+        started = time.monotonic()
+        estimate: dict[str, Any] = {}
+        silent = 0
+        while time.monotonic() - started < self.CAPACITY_MAX_S:
+            r = await self.adb.shell(self.serial, agent_command("battery", "30", "2000"),
+                                     timeout=120)
+            chunk = [m for m in map(parse_json_line, r.out.splitlines())
+                     if m and m.get("type") == "battery"]
+            if not chunk:
+                silent += 1
+                if silent >= 2:
+                    break
+                continue
+            silent = 0
+            samples.extend(chunk)
+            last = chunk[-1]
+            estimate = self._capacity_from_samples(samples)
+            minutes = int((time.monotonic() - started) / 60)
+            await self._emit({"type": "test_step", "test": "battery_capacity",
+                              "step": f"{estimate.get('steps', 0)} of {self.CAPACITY_STEPS} "
+                                      f"percent steps · {minutes} min · "
+                                      f"level {last.get('capacity_percent', '?')}%"})
+            if estimate.get("steps", 0) >= self.CAPACITY_STEPS:
+                break
+
+        estimate = self._capacity_from_samples(samples)
+        design = (self.snapshot.get("battery") or {}).get("design_capacity_mah")
+        result.measurements = {**estimate, "design_capacity_mah": design,
+                               "samples": len(samples)}
+        level = samples[-1].get("capacity_percent") if samples else None
+        if not samples:
+            return await self._finish(result, "inconclusive",
+                                      "The battery service did not answer.")
+        if estimate.get("steps", 0) < 2:
+            minutes = round((time.monotonic() - started) / 60)
+            if silent:
+                why = (f"The battery service stopped answering after {minutes} min, "
+                       "before the level had moved by two percent.")
+            else:
+                why = ("The charge level did not move by at least two percent within "
+                       f"{minutes} minutes"
+                       + (f" (it stayed at {level}%)" if level is not None else "")
+                       + ". Repeat on a wall charger with the battery below 80%.")
+            return await self._finish(result, "inconclusive", why)
+
+        mah = estimate["capacity_mah"]
+        if design:
+            share = round(100 * mah / design)
+            result.measurements["percent_of_design"] = share
+            if share < 75:
+                status = "failed"
+                verdict = "the battery is worn and should be replaced"
+            elif share < 85:
+                status = "passed"
+                verdict = ("around the 80% threshold manufacturers use for a "
+                           "replacement")
+            else:
+                status = "passed"
+                verdict = "in good condition"
+            detail = (f"About {mah:.0f} mAh, {share}% of the {design:.0f} mAh design "
+                      f"capacity: {verdict}.")
+        else:
+            status = "passed"
+            detail = f"About {mah:.0f} mAh; the design capacity is not known to compare."
+        return await self._finish(
+            result, status,
+            detail + f" Measured over {estimate['steps']} percent "
+            f"{'charging' if estimate['direction'] > 0 else 'discharging'} in "
+            f"{estimate['minutes']:.0f} min; an estimate, within about 10%.")
+
+    @classmethod
+    def _capacity_from_samples(cls, samples: list[dict[str, Any]]) -> dict[str, Any]:
+        """Charge per percent between the first and the last level change."""
+        points = []
+        for s in samples:
+            t = s.get("elapsed_ms", s.get("uptime_ms"))
+            level = s.get("capacity_percent")
+            current = cls._to_ma(s.get("current_now_ua"))
+            if isinstance(t, (int, float)) and isinstance(level, int) and current is not None:
+                points.append((t / 1000, level, current))
+        points.sort()
+        changes = [i for i in range(1, len(points)) if points[i][1] != points[i - 1][1]]
+        if len(changes) < 2:
+            return {"steps": 0}
+        first, last = changes[0], changes[-1]
+        steps = abs(points[last][1] - points[first][1])
+        if not steps:
+            return {"steps": 0}
+        direction = 1 if points[last][1] > points[first][1] else -1
+        mah = 0.0
+        for (t0, _l0, i0), (t1, _l1, i1) in zip(points[first:last], points[first + 1:last + 1]):
+            mah += abs(i0 + i1) / 2 * (t1 - t0) / 3600
+        return {
+            "steps": steps,
+            "direction": direction,
+            "charge_mah": round(mah, 1),
+            "capacity_mah": round(mah / steps * 100),
+            "minutes": round((points[last][0] - points[first][0]) / 60, 1),
         }
 
     # -- stress ----------------------------------------------------------------
@@ -1697,8 +1921,8 @@ class TestSuite:
                 notes.append(f"camera {shot.get('id')} ({shot.get('facing')}): no picture, "
                              f"{shot.get('error')}")
             elif (shot.get("brightness") or 0) < 6 and (shot.get("contrast") or 0) < 6:
-                notes.append(f"camera {shot.get('id')} ({shot.get('facing')}): black picture, "
-                             "lens covered or phone face down?")
+                notes.append(f"camera {shot.get('id')} ({shot.get('facing')}): black picture "
+                             "(lens covered, or lying face down)")
         result.measurements = {"photos": shots}
         result.outcome_detail = (
             f"{sum(1 for x in shots if x.get('ok'))} of {len(shots)} cameras returned a picture."
@@ -1791,7 +2015,7 @@ class TestSuite:
             f"pkill -f '[{self.STRESS_TAG[0]}]{self.STRESS_TAG[1:]}'; rm -f {self.BENCH_FILE}; true",
             timeout=10)
         if self._pushed_patterns:
-            await self.adb.shell(self.serial, f"rm -rf {REMOTE_DIR}", timeout=10)
+            await self._remove_patterns()
             self._pushed_patterns = False
             self._patterns.clear()
         if self._pushed_dex:

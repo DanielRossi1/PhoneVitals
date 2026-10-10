@@ -43,6 +43,13 @@ STRENGTH_LABEL = {
     "circumstantial": "Circumstantial",
 }
 
+ANDROID_BY_API = {
+    21: "Android 5", 22: "Android 5.1", 23: "Android 6", 24: "Android 7",
+    25: "Android 7.1", 26: "Android 8", 27: "Android 8.1", 28: "Android 9",
+    29: "Android 10", 30: "Android 11", 31: "Android 12", 32: "Android 12L",
+    33: "Android 13", 34: "Android 14", 35: "Android 15", 36: "Android 16",
+}
+
 
 # Values a partition uses in place of the real model when it carries a generic
 # image shared across several devices.
@@ -89,9 +96,12 @@ class Finding:
     detail: str
     strength: str = "measured"     # proven | measured | circumstantial
     evidence: dict[str, Any] = field(default_factory=dict)
+    # Follows from software the owner installed (unlocked bootloader, custom
+    # ROM, root) rather than from tampering with the device's identity.
+    modification: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "severity": self.severity,
             "category": self.category,
             "title": self.title,
@@ -100,6 +110,9 @@ class Finding:
             "strength_label": STRENGTH_LABEL.get(self.strength, self.strength),
             "evidence": self.evidence,
         }
+        if self.modification:
+            out["modification"] = True
+        return out
 
 
 class AuthenticityEngine:
@@ -107,6 +120,7 @@ class AuthenticityEngine:
         self.s = snapshot
         self.specdb = specdb
         self.findings: list[Finding] = []
+        self.form_factor = (snapshot.get("system") or {}).get("form_factor") or "phone"
 
     # ------------------------------------------------------------------ API
 
@@ -120,6 +134,7 @@ class AuthenticityEngine:
         self._check_soc_coherence()
         self._check_verified_boot()
         self._check_build_signing()
+        self._check_custom_rom()
         self._check_root()
         self._check_knox()
         self._check_serial_coherence()
@@ -127,6 +142,7 @@ class AuthenticityEngine:
         self._check_battery()
         self._check_storage_wear()
         self._check_security_patch()
+        self._check_vendor_patch()
         self._check_google_services()
         self._check_sensor_inventory()
         self._check_components()
@@ -137,10 +153,16 @@ class AuthenticityEngine:
     # ------------------------------------------------------------- helpers
 
     def add(self, severity: str, category: str, title: str, detail: str,
-            strength: str = "measured", **evidence) -> None:
+            strength: str = "measured", modification: bool = False,
+            **evidence) -> None:
+        if self.form_factor != "phone":
+            title, detail = (re.sub(r"\b([Tt]he|[Tt]his|[Aa]) phone\b",
+                                    rf"\1 {self.form_factor}", text)
+                             for text in (title, detail))
         self.findings.append(Finding(
             severity=severity, category=category, title=title,
             detail=detail, strength=strength, evidence=evidence,
+            modification=modification,
         ))
 
     def get(self, *path, default=None):
@@ -295,7 +317,8 @@ class AuthenticityEngine:
                 "which signs it: it is the unforgeable version of the same "
                 "information.",
                 strength="proven", state=state,
-                boot_key=rot.get("verified_boot_key_sha256"))
+                boot_key=rot.get("verified_boot_key_sha256"),
+                modification=state == "unverified" and locked is False)
         elif state == "verified":
             self.add(
                 "ok", "integrity",
@@ -312,7 +335,7 @@ class AuthenticityEngine:
                 "The certificate attests that the bootloader is unlocked. With an "
                 "unlocked bootloader any partition can be replaced, and none of "
                 "the software checks can be considered reliable any more.",
-                strength="proven")
+                strength="proven", modification=True)
 
         # Patch level comparison.
         declared_patch = str(self.get("system", "os", "security_patch", default="") or "")
@@ -375,7 +398,8 @@ class AuthenticityEngine:
                 "Every signature in the chain verifies, up to one of Google's "
                 "hardware attestation roots. The attested fields come from a "
                 "secure environment Google certified, not from software.",
-                strength="proven", fingerprint=fingerprint)
+                strength="proven", fingerprint=fingerprint,
+                genuine_hardware=level != "software")
         elif att.get("root_known") is False:
             self.add(
                 "warning", "integrity",
@@ -821,6 +845,7 @@ class AuthenticityEngine:
                 "IMEI and specifications included, must be treated as declared by "
                 "the installed software rather than verified by the hardware.",
                 strength="proven", state=state, locked=bl.get("locked"),
+                modification=bl.get("locked") is False,
             )
 
     def _check_build_signing(self) -> None:
@@ -865,8 +890,52 @@ class AuthenticityEngine:
                 "will."
                 + (" The debuggable flag is also set, which never happens on "
                    "production firmware." if bs.get("debuggable") else ""),
-                strength="proven", **bs,
+                strength="proven", modification=True, **bs,
             )
+
+    # Aftermarket distributions name themselves in a property of their own.
+    CUSTOM_ROMS = (
+        ("ro.lineage.build.version", "LineageOS"),
+        ("ro.crdroid.build.version", "crDroid"),
+        ("ro.calyxos.version", "CalyxOS"),
+        ("ro.evolution.build.version", "Evolution X"),
+        ("ro.derpfest.version", "DerpFest"),
+        ("ro.pixelos.version", "PixelOS"),
+        ("ro.aicp.version", "AICP"),
+        ("ro.omni.version", "OmniROM"),
+        ("ro.modversion", ""),
+    )
+
+    def _check_custom_rom(self) -> None:
+        props = self.get("system", "props", default={}) or {}
+        name = version = ""
+        for prop, label in self.CUSTOM_ROMS:
+            if props.get(prop):
+                name, version = label or props[prop], props[prop] if label else ""
+                break
+        if not name:
+            return
+        release = props.get("ro.lineage.releasetype", "")
+        launched = int(props.get("ro.product.first_api_level", "0") or 0) \
+            if props.get("ro.product.first_api_level", "").isdigit() else None
+        android = self.get("system", "os", "android_release", default="")
+        self.add(
+            "info", "integrity", f"Custom ROM: {name} {version}".strip(),
+            f"The system identifies itself as {name}"
+            + (f" {version}" if version else "")
+            + (f" ({release.lower()} build)" if release else "")
+            + ", an aftermarket Android distribution installed in place of the "
+            "manufacturer's firmware."
+            + (f" The device launched with {ANDROID_BY_API.get(launched, f'API {launched}')}"
+               f" and now runs Android {android}." if launched and android else "")
+            + " A custom ROM is legitimate, but it requires an unlocked "
+            "bootloader, apps that rely on Play Integrity (banking, payments) may "
+            "refuse to run, and the manufacturer's warranty and updates no longer "
+            "apply. Ask the seller whether the original firmware is still "
+            "available to reinstall.",
+            strength="proven", rom=name, rom_version=version,
+            first_api_level=launched,
+        )
 
     def _check_root(self) -> None:
         root = self.get("security", "root", default={}) or {}
@@ -888,7 +957,7 @@ class AuthenticityEngine:
                 + "; ".join(parts) + ". With root privileges any value read by "
                 "this program may have been altered in memory, including IMEI, "
                 "model and verified boot state.",
-                strength="proven",
+                strength="proven", modification=True,
                 **{k: v for k, v in root.items() if k != "shell_uid"},
             )
         else:
@@ -921,7 +990,7 @@ class AuthenticityEngine:
                 " The fuse is physical and does not reset by reflashing the "
                 "original firmware: it is permanent proof that the device has run "
                 "unofficial software.",
-                strength="proven", **knox,
+                strength="proven", modification=True, **knox,
             )
         else:
             self.add(
@@ -1139,6 +1208,40 @@ class AuthenticityEngine:
         hist = self.get("history", default={}) or {}
         if not hist:
             return
+
+        users = hist.get("users") or {}
+        if users.get("read"):
+            extra = []
+            if users.get("secondary"):
+                n = users["secondary"]
+                extra.append(f"{n} other user{'s' if n > 1 else ''}")
+            if users.get("guest"):
+                extra.append("a guest user")
+            if users.get("work_profile"):
+                extra.append("a work profile")
+            if users.get("private_space"):
+                extra.append("a private space")
+            if extra:
+                self.add(
+                    "warning", "history", "Other users or profiles on the phone",
+                    "Besides the main user, the phone holds " + ", ".join(extra)
+                    + ". Each keeps its own apps, accounts and files, out of sight "
+                    "from the main user, and may hold a Google account of its own. "
+                    "A factory reset removes them all."
+                    + (" A work profile also means an organisation manages part of "
+                       "the phone: ask the seller to remove it."
+                       if users.get("work_profile") else ""),
+                    strength="measured", **{k: users.get(k) for k in (
+                        "secondary", "guest", "work_profile", "private_space")},
+                )
+            else:
+                self.add(
+                    "ok", "history", "Only the main user",
+                    "No other users, guest, work profile or private space are set up."
+                    + (" A profile for cloned apps exists, which the system creates "
+                       "for dual-app features." if users.get("clone_profile") else ""),
+                    strength="measured",
+                )
 
         accounts = hist.get("accounts") or {}
         if accounts.get("read"):
@@ -1379,6 +1482,45 @@ class AuthenticityEngine:
             strength="measured", security_patch=patch, months_behind=months,
         )
 
+    def _check_vendor_patch(self) -> None:
+        """Drivers and firmware updated together with the system, or not.
+
+        The vendor partition carries the manufacturer's drivers and the
+        interfaces to modem and secure environment. A custom ROM, or a system
+        updated without its firmware, moves the Android patch forward while
+        this layer stays where the manufacturer left it.
+        """
+        system_patch = self.get("system", "os", "security_patch", default="")
+        attested = self.get("attestation", "vendor_patch_level", default="") or ""
+        vendor = attested or self.get("system", "props", "ro.vendor.build.security_patch",
+                                      default="") or ""
+        try:
+            sys_date = dt.date.fromisoformat(system_patch)
+            ven_date = dt.date.fromisoformat(vendor if len(vendor) == 10 else vendor + "-01")
+        except ValueError:
+            return
+        months = (sys_date.year - ven_date.year) * 12 + (sys_date.month - ven_date.month)
+        if months <= 12:
+            return
+        # Some manufacturers ship official updates that leave the vendor patch
+        # behind: on an official build it is a note, not a warning.
+        official = bool(self.get("security", "build_signing", "official", default=False))
+        self.add(
+            "info" if official else "warning", "integrity",
+            f"Firmware not updated since {vendor[:7]}",
+            f"The Android system carries the {system_patch[:7]} security patch, but "
+            f"the vendor layer (the manufacturer's drivers and the firmware of "
+            f"modem and secure environment) stops at {vendor[:7]}, {months} months "
+            "earlier. Vulnerabilities fixed there since then remain open."
+            + (" Some manufacturers update the system without this layer."
+               if official else
+               " This is typical of a custom ROM on a device the manufacturer no "
+               "longer updates."),
+            strength="proven" if attested else "measured",
+            system_patch=system_patch, vendor_patch=vendor, months_apart=months,
+            source="attestation" if attested else "property",
+        )
+
     def _check_google_services(self) -> None:
         pkg = self.get("packages", default={}) or {}
         if not pkg:
@@ -1440,7 +1582,9 @@ class AuthenticityEngine:
         if not sens.get("count"):
             return
 
-        # A mid-range or flagship phone always has at least these.
+        # A mid-range or flagship phone always has at least these. A tablet
+        # has no earpiece to hold to the face, so no proximity sensor, and
+        # cheaper ones also leave out gyroscope and compass.
         essential = {
             "accelerometer": "accelerometer",
             "gyroscope": "gyroscope",
@@ -1448,9 +1592,19 @@ class AuthenticityEngine:
             "light": "ambient light sensor",
             "proximity": "proximity sensor",
         }
+        if self.form_factor == "tablet":
+            essential = {"accelerometer": "accelerometer",
+                         "light": "ambient light sensor"}
         missing = [label for key, label in essential.items() if not has.get(key)]
 
-        if missing:
+        if missing and self.form_factor == "tablet":
+            self.add(
+                "warning", "components", "Basic sensors missing",
+                "Not present: " + ", ".join(missing) + ". Every tablet fits them: "
+                "screen rotation and automatic brightness depend on them.",
+                strength="measured", missing=missing,
+            )
+        elif missing:
             self.add(
                 "warning", "components", "Basic sensors missing",
                 "Not present: " + ", ".join(missing) + ". Mid-range and flagship "
@@ -1463,8 +1617,7 @@ class AuthenticityEngine:
             self.add(
                 "ok", "components", "All basic sensors present",
                 f"The device exposes {sens['count']} sensors, including "
-                "accelerometer, gyroscope, magnetometer, ambient light and "
-                "proximity. Declared vendors: "
+                + ", ".join(essential.values()) + ". Declared vendors: "
                 + ", ".join(sens.get("vendors", [])[:6]) + ".",
                 strength="measured", count=sens["count"],
             )
@@ -1674,11 +1827,7 @@ class AuthenticityEngine:
         for f in self.findings:
             by_sev.setdefault(f.severity, []).append(f.to_dict())
 
-        penalty = sum(SEVERITY_WEIGHT.get(f.severity, 0) for f in self.findings)
-        score = max(0, 100 - penalty)
-
-        verdict, headline = summarise(
-            len(by_sev["critical"]), len(by_sev["warning"]))
+        score, verdict, headline = assess([f.to_dict() for f in self.findings])
 
         return {
             "score": score,
@@ -1715,25 +1864,51 @@ DISCLAIMER = (
 )
 
 
-def summarise(n_critical: int, n_warning: int) -> tuple[str, str]:
-    """Map finding counts to a verdict and headline.
+def assess(findings: list[dict[str, Any]]) -> tuple[int, str, str]:
+    """Score, verdict and headline for a list of findings.
 
     Shared with the analyzer, which recounts after merging in the IMEI
     findings; keeping one implementation stops the two from drifting.
+
+    A device whose only serious findings follow from software its owner
+    installed -- unlocked bootloader, custom ROM, root -- is "modified", not
+    "compromised", provided the secure environment, verified up to Google's
+    roots, vouches for the hardware. Those findings describe one fact, so they
+    weigh as a single warning on the score. Without that anchor nothing tells
+    a modified original from a clone, and the verdict stays compromised.
     """
-    if n_critical:
-        return "compromised", (
-            f"{n_critical} serious anomalies detected. The device shows internal "
+    critical = [f for f in findings if f.get("severity") == "critical"]
+    warnings = [f for f in findings if f.get("severity") == "warning"]
+    other_critical = [f for f in critical if not f.get("modification")]
+    genuine = any((f.get("evidence") or {}).get("genuine_hardware")
+                  and f.get("severity") == "ok" for f in findings)
+
+    if critical and not other_critical and genuine:
+        penalty = SEVERITY_WEIGHT["warning"] * (1 + len(warnings))
+        return max(0, 100 - penalty), "modified", (
+            "Original hardware running modified software. The secure environment, "
+            "verified up to Google's roots, confirms a genuine device; the "
+            f"{len(critical)} serious findings all follow from the unlocked "
+            "bootloader and the software installed on it, which an owner may do "
+            "legitimately. The software's own readings cannot be trusted as "
+            "evidence."
+            + (f" {len(warnings)} other findings are worth checking." if warnings else "")
+        )
+
+    score = max(0, 100 - sum(SEVERITY_WEIGHT.get(f.get("severity"), 0) for f in findings))
+    if critical:
+        return score, "compromised", (
+            f"{len(critical)} serious anomalies detected. The device shows internal "
             "contradictions that cannot occur on an original, intact unit."
         )
-    if n_warning >= 3:
-        return "suspicious", (
-            f"No serious anomalies, but {n_warning} findings worth investigating. "
+    if len(warnings) >= 3:
+        return score, "suspicious", (
+            f"No serious anomalies, but {len(warnings)} findings worth investigating. "
             "The overall picture warrants a manual check."
         )
-    if n_warning:
-        return "caution", (
-            f"No serious anomalies. {n_warning} minor findings, consistent with a "
+    if warnings:
+        return score, "caution", (
+            f"No serious anomalies. {len(warnings)} minor findings, consistent with a "
             "used or repaired device."
         )
-    return "no_anomalies", "No anomalies detected by the checks performed."
+    return score, "no_anomalies", "No anomalies detected by the checks performed."

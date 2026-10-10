@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import re
 import sys
 import time
 
@@ -391,8 +392,8 @@ def titles(report):
 def check_dual_sim() -> list[str]:
     """Regression: a second IMEI is normal, not evidence of tampering.
 
-    The two values are the real ones read off a dual-SIM Pixel 8: same TAC,
-    consecutive serial numbers. Earlier versions raised a critical for the
+    The two values are synthetic, on the 49015420 test TAC, laid out the way
+    a dual-SIM Pixel 8 reports its pair: same TAC, consecutive serial numbers. Earlier versions raised a critical for the
     plurality itself, and raised the brand mismatch once per IMEI -- which,
     since the verdict is decided by counting findings by severity, gave one
     fact double weight.
@@ -522,6 +523,88 @@ def check_catalogue_and_links() -> list[str]:
     return problems
 
 
+def check_tablet_and_custom_rom() -> list[str]:
+    """A tablet on a custom ROM: named for what it is, judged as a tablet.
+
+    Modelled on a Galaxy Tab S5e running LineageOS 22 (all identifiers made
+    up): no proximity sensor, which every tablet lacks, an Android patch from
+    this year over a vendor layer frozen years earlier.
+    """
+    import copy
+
+    problems = []
+    print(f"\n{'=' * 70}\nCASE 8 — tablet on a custom ROM\n{'=' * 70}")
+    tab = copy.deepcopy(GENUINE)
+    tab["system"]["form_factor"] = "tablet"
+    tab["system"].setdefault("props", {}).update({
+        "ro.lineage.build.version": "22.2",
+        "ro.lineage.releasetype": "NIGHTLY",
+        "ro.product.first_api_level": "28",
+        "ro.vendor.build.security_patch": "2022-11-01",
+    })
+    tab["system"]["os"]["security_patch"] = "2026-09-01"
+    tab.pop("attestation", None)
+    has = tab.setdefault("sensors", {}).setdefault("has", {})
+    has.update({"accelerometer": True, "light": True, "proximity": False})
+    tab["sensors"]["count"] = tab["sensors"].get("count") or 20
+    report = AuthenticityEngine(tab, specdb=SpecDatabase()).run()
+    found = titles(report)
+    if "Basic sensors missing" in found:
+        problems.append("a tablet without a proximity sensor was reported as missing one")
+    if "Custom ROM: LineageOS 22.2" not in found:
+        problems.append("the custom ROM was not named")
+    if "Firmware not updated since 2022-11" not in found:
+        problems.append("a vendor layer 46 months behind the system was not reported")
+    phone_words = [f["title"] for f in report["findings"]
+                   if re.search(r"\b[Tt]he phone\b", f["title"] + f["detail"])]
+    if phone_words:
+        problems.append("a tablet is still called a phone in: " + ", ".join(phone_words))
+
+    # The same tablet with its secure environment vouching for the hardware:
+    # unlocked and reflashed by its owner, which is a modification, not fraud.
+    tab["security"].update({
+        "verified_boot": {"state": "orange", "label": "Bootloader unlocked",
+                          "trusted": False, "known": True, "explanation": ""},
+        "bootloader": {"locked": False},
+        "build_signing": {"tags": "release-keys", "type": "userdebug",
+                          "official": False, "debuggable": True, "readable": True},
+        "knox": {"tripped": True, "explanation": ""},
+    })
+    tab["attestation"] = {
+        "available": True, "security_mode": "tee", "security_level": "tee",
+        "security_label": "TEE", "challenge_matches": True, "root_known": True,
+        "chain": {"checked": True, "signatures_valid": True},
+        "root_of_trust": {"verified_boot_state": "unverified", "device_locked": False},
+    }
+    modified = AuthenticityEngine(tab, specdb=SpecDatabase()).run()
+    if modified["verdict"] != "modified":
+        problems.append(f"an owner-modified original was judged {modified['verdict']}")
+    if modified["score"] < 50:
+        problems.append(f"modifications counted once each: score {modified['score']}")
+    unanchored = copy.deepcopy(tab)
+    unanchored["attestation"]["root_known"] = None
+    if AuthenticityEngine(unanchored, specdb=SpecDatabase()).run()["verdict"] != "compromised":
+        problems.append("without a verified attestation root a modified device "
+                        "must stay compromised: nothing tells it from a clone")
+    print(f"  modified tablet: {modified['score']}/100 ({modified['verdict']})")
+
+    # A Wi-Fi-only part number on a board with a mobile radio.
+    relabelled = copy.deepcopy(tab)
+    relabelled["system"].setdefault("partitions", {}).setdefault("effective", {}).update(
+        {"brand": "samsung", "model": "SM-T720", "device": "gts4lvwifi"})
+    relabelled["sensors"]["features"] = ["android.hardware.telephony", "android.hardware.wifi"]
+    spec = SpecDatabase().lookup("samsung", "SM-T720", "gts4lvwifi")
+    radio = [i["title"] for i in SpecDatabase().compare(spec, relabelled)] if spec else []
+    if "Mobile radio on a Wi-Fi-only model" not in radio:
+        problems.append("a mobile radio inside a Wi-Fi-only model was not reported")
+
+    for problem in problems:
+        print(f"  FAILED {problem}")
+    if not problems:
+        print("  ok   tablet sensors, custom ROM, vendor patch, wording, modified verdict")
+    return problems
+
+
 def run(snapshot, label):
     engine = AuthenticityEngine(snapshot, specdb=SpecDatabase())
     report = engine.run()
@@ -619,6 +702,9 @@ def main() -> int:
 
     # Seventh case: rules that used to raise false alarms on genuine phones.
     failures.extend(check_catalogue_and_links())
+
+    # Eighth case: a tablet running a custom ROM.
+    failures.extend(check_tablet_and_custom_rom())
 
     print(f"\n{'=' * 70}")
     if failures:

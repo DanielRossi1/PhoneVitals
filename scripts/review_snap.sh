@@ -18,10 +18,9 @@ rc=$?
 set -e
 rm -rf "$DIR"
 
-# 0 clean, 3 warnings only (manual review at most), anything else is a
-# rejection or a failure of the review itself.
-case "$rc" in
-  0) ;;
-  3) echo "::warning::the store review reported warnings, see the log above" ;;
-  *) echo "::error::the store review rejected the snap (exit $rc)"; exit 1 ;;
-esac
+# Any finding fails: the store holds an upload with warnings for manual
+# review, and that blocks every later upload until someone acts on it.
+if [ "$rc" -ne 0 ]; then
+  echo "::error::the store review would not approve the snap automatically (exit $rc)"
+  exit 1
+fi

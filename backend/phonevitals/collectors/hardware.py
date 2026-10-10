@@ -220,6 +220,14 @@ class StorageCollector(Collector):
             # /proc/partitions stays readable on some devices where sysfs is
             # closed by SELinux. Sizes are in 1 KiB blocks.
             "stor.proc_disks": 'grep -E " (sd[a-z]|mmcblk[0-9])$" /proc/partitions',
+            # Readable even where SELinux closes sysfs and /proc/partitions:
+            # the boot device names its controller (7c4000.sdhci for eMMC,
+            # 1d84000.ufshc for UFS), and the disk holding /data is mmcblk0
+            # or sda.
+            "stor.boot_props": "getprop ro.boot.bootdevice; getprop dev.mnt.rootdisk.data",
+            # StorageManager reads the block device with system privileges and
+            # rounds it to the commercial size, the figure Settings shows.
+            "stor.sm_total": "dumpsys mount 2>/dev/null | grep -m1 'Internal storage'",
         }
 
     def parse(self, raw: dict[str, str]) -> dict[str, Any]:
@@ -274,13 +282,20 @@ class StorageCollector(Collector):
         # flagged as such so no rule treats it as hard evidence.
         nominal = self._nominal_gb(physical_bytes)
         nominal_source = "block_device" if nominal else None
+        if nominal is None:
+            m = re.search(r"total size:\s*(\d+)", raw.get("stor.sm_total", ""))
+            nominal = self._nominal_gb(int(m.group(1))) if m else None
+            nominal_source = "storage_manager" if nominal else None
         if nominal is None and data_total:
             nominal = self._nominal_gb(data_total)
             nominal_source = "estimated_from_data_partition" if nominal else None
 
-        if scsi or ufs_present or any(d["name"].startswith("sd") for d in proc_disks):
+        boot_props = raw.get("stor.boot_props", "").lower()
+        if (scsi or ufs_present or any(d["name"].startswith("sd") for d in proc_disks)
+                or re.search(r"ufs|^sda$", boot_props, re.M)):
             storage_type = "UFS"
-        elif mmc or any(d["name"].startswith("mmcblk") for d in proc_disks):
+        elif (mmc or any(d["name"].startswith("mmcblk") for d in proc_disks)
+                or re.search(r"sdhci|mmc", boot_props)):
             storage_type = "eMMC"
         else:
             storage_type = "unknown"

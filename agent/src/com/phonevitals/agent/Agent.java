@@ -5,7 +5,9 @@ import android.bluetooth.BluetoothManager;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanResult;
+import android.content.AttributionSource;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Bitmap;
@@ -397,13 +399,67 @@ public final class Agent {
      * Recreating the context on the `com.android.shell` package -- which is
      * what UID 2000 actually belongs to -- makes the attribution consistent
      * again and the check passes.
+     *
+     * A package context made from the system context still inherits "android"
+     * as its op package, though, and stricter builds (seen on LineageOS 22)
+     * refuse camera and microphone operations attributed that way: the
+     * wrapper names the shell package everywhere the framework asks.
      */
     private static Context shellContext() {
+        Context base;
         try {
-            return context.createPackageContext(
-                    "com.android.shell", Context.CONTEXT_IGNORE_SECURITY);
+            base = context.createPackageContext(
+                    SHELL_PACKAGE, Context.CONTEXT_IGNORE_SECURITY);
         } catch (Throwable t) {
-            return context;
+            base = context;
+        }
+        return new ShellContext(base);
+    }
+
+    private static final String SHELL_PACKAGE = "com.android.shell";
+
+    private static final class ShellContext extends ContextWrapper {
+        ShellContext(Context base) {
+            super(base);
+        }
+
+        @Override
+        public String getPackageName() {
+            return SHELL_PACKAGE;
+        }
+
+        @Override
+        public String getOpPackageName() {
+            return SHELL_PACKAGE;
+        }
+
+        @Override
+        public AttributionSource getAttributionSource() {
+            return new AttributionSource.Builder(android.os.Process.myUid())
+                    .setPackageName(SHELL_PACKAGE)
+                    .build();
+        }
+
+        @Override
+        public Context getApplicationContext() {
+            return this;
+        }
+    }
+
+    /**
+     * A CameraManager bound to the shell context. getSystemService would
+     * bind it to the underlying system context and its "android" identity;
+     * the constructor is hidden but stable since Android 5.
+     */
+    private static CameraManager cameraManager() {
+        Context ctx = shellContext();
+        try {
+            java.lang.reflect.Constructor<CameraManager> c =
+                    CameraManager.class.getDeclaredConstructor(Context.class);
+            c.setAccessible(true);
+            return c.newInstance(ctx);
+        } catch (Throwable t) {
+            return (CameraManager) ctx.getSystemService(Context.CAMERA_SERVICE);
         }
     }
 
@@ -796,7 +852,7 @@ public final class Agent {
      */
     private static void setTorch(boolean on, long holdMillis) {
         try {
-            Object cm = context.getSystemService(Context.CAMERA_SERVICE);
+            Object cm = cameraManager();
             Method getIds = cm.getClass().getMethod("getCameraIdList");
             String[] ids = (String[]) getIds.invoke(cm);
             Method setTorchMode = cm.getClass().getMethod(
@@ -856,6 +912,8 @@ public final class Agent {
             o.put("type", "battery");
             o.put("sample", i);
             o.put("uptime_ms", android.os.SystemClock.uptimeMillis());
+            // Keeps counting through deep sleep, unlike uptime.
+            o.put("elapsed_ms", android.os.SystemClock.elapsedRealtime());
             // Positive values mean current flowing into the battery.
             putIfValid(o, "current_now_ua", bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW));
             putIfValid(o, "current_avg_ua", bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE));
@@ -1020,9 +1078,11 @@ public final class Agent {
             started.put("rate", RECORD_RATE);
             emit(started);
             int read = 0;
+            int error = 0;
             while (read < total) {
                 int n = rec.read(pcm, read, Math.min(4096, total - read));
                 if (n <= 0) {
+                    error = n;
                     break;
                 }
                 read += n;
@@ -1031,6 +1091,9 @@ public final class Agent {
             o.put("type", "audio");
             o.put("rate", RECORD_RATE);
             o.put("bytes", read);
+            if (error != 0) {
+                o.put("read_error", error);
+            }
             o.put("pcm_b64", Base64.encodeToString(pcm, 0, read, Base64.NO_WRAP));
             emit(o);
         } finally {
@@ -1116,8 +1179,7 @@ public final class Agent {
      * look at; nothing is saved on the phone.
      */
     private static void captureCameras() throws Exception {
-        Context ctx = shellContext();
-        CameraManager cm = (CameraManager) ctx.getSystemService(Context.CAMERA_SERVICE);
+        CameraManager cm = cameraManager();
         HandlerThreadLite worker = new HandlerThreadLite();
         for (String id : cm.getCameraIdList()) {
             JSONObject o = new JSONObject();
