@@ -18,8 +18,10 @@ From a source checkout: `./run.sh` (see [Development](#development)).
 > kind. They are not a certification of authenticity, condition or value. The
 > authors accept no liability for decisions taken on the basis of its results,
 > or for any damage arising from its use, including from the functional tests
-> (some heat the phone, make it vibrate or briefly change a setting). Every
-> report, the PDF included, carries the same notice.
+> (some heat the phone, make it vibrate or briefly change a setting). Using
+> PhoneVitals means accepting its [terms of use](TERMS.md), which the
+> application also shows from the sidebar; every report, the PDF included,
+> refers to them.
 
 ![Overview: verdict, the points that need a look, battery, storage and patch level](docs/screenshots/1-overview.png)
 
@@ -38,7 +40,7 @@ simulated.
 The report separates its conclusions into three levels of evidential strength,
 and this is the most important thing to understand in order to use it well.
 
-**Proven.** Derived from arithmetic, or from a comparison between values that
+**Certain.** Derived from arithmetic, or from a comparison between values that
 must agree by construction. Depends on no database and is not a matter of
 opinion.
 
@@ -82,8 +84,51 @@ discrepancy is a suspicion to verify, not a verdict.
   phone are counted, never opened.
 - End of the manufacturer's security-update guarantee, for catalogued models.
 
-**Circumstantial.** Usage statistics and absences. Directs a manual check;
+**Indication.** Usage statistics and absences. Directs a manual check;
 never sufficient on its own.
+
+The overview opens with the same conclusions in plain words, *In short*: is it
+genuine, which system it runs, whether it has been opened, how the battery is,
+whether it is ready to change hands and where it comes from. Each answer links
+to the page with the evidence.
+
+A phone that the secure environment, verified up to Google's roots, vouches
+for, and whose only serious findings come from an unlocked bootloader, a
+custom OS or root, is reported as **modified**: an original phone running
+software its owner chose, not a counterfeit. GrapheneOS, CalyxOS, LineageOS,
+/e/OS, iodéOS and other custom ROMs are named.
+
+### Hardware check
+
+One page for every component, sensors and actuators included: what it reports
+about itself, whether the phone calls it original or replaced, the clues
+found and the tests that exercise it.
+
+- Screen and battery replacement as the phone itself reports it (Android 15
+  and later); on Pixel phones, whether the battery is paired with this
+  phone or came from another one.
+- The battery gauge compared with the capacity Android learns while charging:
+  a large gap points to an aftermarket battery or a reset gauge.
+- Parts the firmware declares but the hardware does not report: missing,
+  disconnected or dead. Liquid or debris in the USB-C port, where the port
+  controller detects it. The fingerprint reader's rejection rate, high on an
+  uncalibrated under-display reader after a screen replacement.
+- Component codes to match against spare parts: storage chip and its
+  production date, touch controller, panel driver, GPU, camera sensors,
+  sensor chips.
+- Origin: the market the phone was built for (hardware model number, Samsung
+  sales code, Asus SKU) against the country of its SIM, and the age of the
+  mainboard (serial number, factory radio calibration, storage chip), never
+  of the battery, which may have been replaced.
+- A physical inspection checklist, saved into the report.
+
+### Event history
+
+Restarts classified (updates, flat battery, overheating, kernel panics,
+recovery and bootloader modes), recovery and file-system repair records, and
+the traces of earlier use: SIMs and eSIMs, saved Wi-Fi networks, paired
+devices, account changes, other users, guest, work profile and private space.
+They are counted on the phone; names, numbers and addresses never leave it.
 
 ### Functional tests
 
@@ -97,8 +142,19 @@ sensors. A test that cannot decide (no SIM, no satellites indoors, battery
 full) says *inconclusive*, never *failed*.
 
 Guided, where a person has to look or act: a picture from every camera,
-touch coverage and multitouch, screen colours, buttons, proximity, light,
+touch coverage and multitouch, stylus pressure and hover, screen colours and
+burn-in patterns opened in the phone's gallery, buttons, proximity, light,
 compass, flash and vibration strengths.
+
+*Battery capacity* follows the charge for a few percent and integrates the
+current, an estimate of the real capacity for phones that do not report their
+health. It takes 10 to 30 minutes on the charger, with the battery below 90%,
+so "Run automatic tests" leaves it out.
+
+Tests are offered only for what the device has: a Wi-Fi-only tablet gets no
+mobile network test, a phone without a flash no flash test. Where an old
+Android shell lacks a command (Android 7 has no `cmd vibrator`, `cmd wifi` or
+`awk`), the tests fall back to the agent or the system's last results.
 
 ### Reports
 
@@ -132,7 +188,8 @@ everything; `scripts/analyse_cli.py --no-memory` leaves it untouched.
 A phone known to be genuine can be saved as the **reference unit** for its
 model (Authenticity page). Later units of the same model are compared with it
 trait by trait: processor, core layout and frequencies, resolution, camera
-sensors, sensor chips. Differences in what genuine units share are reported
+sensors, sensor chips, display panel and its driver, touch controller,
+fingerprint sensor. Differences in what genuine units share are reported
 as warnings; in parts sourced from several suppliers, as notes.
 
 ### What it does not do
@@ -187,9 +244,10 @@ scripts/                setup, build, utilities
 
 The backend is Python (FastAPI), the interface is a Svelte page served on
 `127.0.0.1` and loaded inside an Electron window. It opens on an overview —
-verdict, the findings that need a look, battery, storage, patch level and test
-progress — with the details one click away in the sidebar: authenticity,
-health, functional tests, live sensors, specifications and raw data. It
+verdict, the answers in plain words, the findings that need a look, battery,
+storage, patch level and test progress — with the details one click away in
+the sidebar: authenticity, health, hardware check, functional tests, live
+sensors, specifications and raw data. It
 follows the desktop's light or dark theme, or the one picked in the sidebar. The backend binds a free
 port chosen at startup and announces it on stdout, so it never collides with
 another program or another instance.
@@ -416,9 +474,10 @@ snapcraft export-login --snaps=phonevitals \
   --acls package_access,package_push,package_update,package_release -
 ```
 
-Connecting the repository on snapcraft.io (Builds tab) adds builds of every
-push to `main`, released to `edge`. The two coexist: `edge` follows the
-branch, `candidate` and `stable` follow the releases.
+Only releases reach the Snap Store: do not connect the repository on
+snapcraft.io (Builds tab), which would publish every push to `main` to
+`edge`. CI still builds and reviews the snap on every push, without
+uploading it.
 
 Store listing screenshots are in `docs/screenshots`; regenerate them after
 interface changes with `./scripts/store_screenshots.sh` (demo data only).

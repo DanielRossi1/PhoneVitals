@@ -7,6 +7,11 @@ report format may still change between minor versions.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-11
+
+Hardware check, origin and event history; tablets, custom OSes and Android 7
+supported; terms of use.
+
 ### Added
 - Tablets are recognised as such: sensors expected of a tablet, wording in
   findings and test instructions, device type in the overview and the PDF.

@@ -1,7 +1,7 @@
 {
   "name": "phonevitals",
   "productName": "PhoneVitals",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Understand the real condition of an Android phone before buying or selling it",
   "main": "main.js",
   "private": true,
